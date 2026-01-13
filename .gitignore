@@ -1,0 +1,41 @@
+# ----------------------
+# Julia
+# ----------------------
+*.jl~
+*.ji
+*.log
+
+# Julia environments (choose one approach)
+Manifest.toml
+# Uncomment the next line if you want to commit Manifest.toml
+# !Manifest.toml
+
+# Keep folder structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+
+# ----------------------
+# OS / editor junk
+# ----------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ----------------------
+# Logs and temp files
+# ----------------------
+*.tmp
+*.bak
+*.out
+
+# ----------------------
+# Python (if ever used)
+# ----------------------
+__pycache__/
+*.pyc
+.env
+venv/

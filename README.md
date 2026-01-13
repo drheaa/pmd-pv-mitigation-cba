@@ -1,6 +1,6 @@
 # LV PV Integration and Mitigation using PowerModelsDistribution
 
-This repository contains research code for analysing the impact of high rooftop PV penetration on low-voltage (LV) distribution networks, and for testing mitigation options such as STATCOMs, SOPs, and batteries.
+This repository contains research code for analysing the impact of high rooftop PV penetration on low-voltage (LV) distribution networks, and for testing mitigation options such as STATCOMs, SOPs, and batteries using PowerModelsDistribution.jl.
 
 The work is exploratory and research-focused, and is intended to replicate and extend a D-Suite-style (https://www.spenergynetworks.co.uk/userfiles/file/D-Suite-D1.3-Report-Cost-Benefit-Analysis.pdf) from SP Energy Networks, planning workflow using unbalanced AC optimal power flow (OPF).
 
@@ -81,13 +81,13 @@ The focus is on **planning-level analysis**, not real-time control.
 
 ---
 
-## Repository structure (high level)
+## Repository structure 
 
 ```text
 
 pmd_pv_mitigation_cba/
 ├─ Project.toml
-├─ Manifest.toml                 # optional to commit; if you want strict reproducibility, commit it
+├─ Manifest.toml                 
 ├─ README.md
 ├─ .gitignore
 ├─ LICENSE
@@ -106,7 +106,7 @@ pmd_pv_mitigation_cba/
 │  ├─ costs.toml                 # STATCOM/SOP/Battery cost parameters for CBA
 │  └─ scenarios.csv              # scenario registry: feeder_id, scenario_id, pv_level, etc.
 │
-├─ src/                          # reusable Julia code (your "library")
+├─ src/                          # reusable Julia code ("library")
 │  ├─ IO.jl                      # parse_file wrappers, path helpers, saving/loading tables
 │  ├─ Network.jl                 # transform_data_model, voltage limits, kron flags, etc.
 │  ├─ Metrics.jl                 # voltage metrics, margin metrics, VUF, violations, region detection
@@ -164,7 +164,7 @@ pmd_pv_mitigation_cba/
 └─ notebooks/                    # optional explorations (not the main pipeline)
    ├─ scratch_voltage_debug.ipynb
    └─ scratch_pv_profiles.ipynb
-   
+
 ```
 
 Each analysis stage writes structured CSV outputs so downstream stages can run without manual intervention.
