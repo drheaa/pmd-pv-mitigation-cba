@@ -83,6 +83,8 @@ The focus is on **planning-level analysis**, not real-time control.
 
 ## Repository structure (high level)
 
+```text
+
 pmd_pv_mitigation_cba/
 ├─ Project.toml
 ├─ Manifest.toml                 # optional to commit; if you want strict reproducibility, commit it
@@ -162,7 +164,8 @@ pmd_pv_mitigation_cba/
 └─ notebooks/                    # optional explorations (not the main pipeline)
    ├─ scratch_voltage_debug.ipynb
    └─ scratch_pv_profiles.ipynb
- 
+   
+```
 
 Each analysis stage writes structured CSV outputs so downstream stages can run without manual intervention.
 
