@@ -1,0 +1,8 @@
+year,parquet,rows,cols,numeric_cols
+2023,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2023/49661634_0.parquet,17520,3302,3302
+2025,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2025/49661637_0.parquet,17520,3302,3302
+2030,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2030/49661640_0.parquet,17520,3302,3302
+2035,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2035/49661643_0.parquet,17520,3302,3302
+2040,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2040/49661646_0.parquet,17520,3302,3302
+2045,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2045/49661649_0.parquet,17520,3302,3302
+2050,/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments/data/raw/dsuite_load_profiles/profiles/year=2050/49661652_0.parquet,17520,3302,3302
