@@ -8,12 +8,14 @@ using Ipopt
 using DataFrames
 using CSV
 using Plots
+using Statistics
 
 const PMD = PowerModelsDistribution
 PMD.silence!()
 
 # ============================================================
 # Baseline snapshot PF (no PV, no STATCOM) + topology distances
+# with LOAD SCALING
 # ============================================================
 
 # -----------------------------
@@ -30,8 +32,26 @@ TBLDIR = joinpath(OUTDIR, "tables")
 mkpath(FIGDIR); mkpath(TBLDIR)
 
 VBASE_LN = 230.0
-VMIN_V = 0.94 * VBASE_LN
-VMAX_V = 1.10 * VBASE_LN
+VMIN_PU  = 0.94
+VMAX_PU  = 1.10
+VMIN_V   = VMIN_PU * VBASE_LN
+VMAX_V   = VMAX_PU * VBASE_LN
+
+# -----------------------------
+# 0.5) Load scaling controls
+# -----------------------------
+# Option A: fixed alpha (simple, start here)
+LOAD_ALPHA = 1.0
+
+# Option B: sweep alphas and pick one automatically
+DO_ALPHA_SWEEP = false
+ALPHAS = 0.5:0.1:3.0
+
+# "Target" for what the baseline to look like.
+# This is a loose heuristic, not a law of physics.
+TARGET_Q05_PU = 0.98   # 5th percentile of min-phase voltage, in pu
+TARGET_MIN_PU = 0.96   # absolute minimum voltage in pu
+PICK_POLICY = :closest_q05  # :closest_q05 or :closest_min
 
 # -----------------------------
 # Helpers
@@ -88,7 +108,6 @@ function make_edges_from_lines(eng)::DataFrame
         b2 = lowercase(string(get(ln, "t_bus", "")))
         len_km = (get(ln, "length", 0.0)) / 1000.0
 
-        # Skip empty
         (isempty(b1) || isempty(b2)) && continue
 
         push!(rows, (
@@ -106,9 +125,8 @@ end
 """
 Create edges from eng["transformer"].
 
-In this dataset, the transformer is the only "bridge" from sourcebusz to the LV bus
-(e.g. buses=(sourcebusz 9089776)). If we ignore transformers, BFS from source dies.
-We assign a tiny length (0.0 km) because the file doesn't give physical distance.
+In this dataset, transformer is the "bridge" from sourcebusz to LV bus.
+We assign 0 km because physical distance is not given here.
 """
 function make_edges_from_transformers(eng)::DataFrame
     rows = NamedTuple[]
@@ -117,7 +135,6 @@ function make_edges_from_transformers(eng)::DataFrame
     end
 
     for (id, tx) in eng["transformer"]
-        # PMD transformer representation typically stores buses in tx["bus"] or tx["buses"]
         buses =
             haskey(tx, "bus")   ? tx["bus"] :
             haskey(tx, "buses") ? tx["buses"] :
@@ -133,7 +150,7 @@ function make_edges_from_transformers(eng)::DataFrame
             edge_id = string(id),
             Bus1 = b1,
             Bus2 = b2,
-            length_km = 0.0,        # transformer doesn't have a line length in DSS here
+            length_km = 0.0,
             kind = "transformer"
         ))
     end
@@ -143,7 +160,7 @@ end
 
 """
 Build adjacency and compute shortest-path distances from source_bus.
-Because this is radial-ish, BFS works fine, but we use a simple queue and sum lengths.
+This is BFS style, summing line lengths.
 """
 function compute_bus_distances(edges_df::DataFrame; source_bus::String)
     adj = Dict{String, Vector{Tuple{String, Float64}}}()
@@ -206,6 +223,9 @@ function solved_bus_vm_volts_keyed_by_eng(pf, math; vbase_ln=230.0)
     return out
 end
 
+"""
+Plot voltage along feeder, using bus "distance" and bus phase voltages.
+"""
 function plot_voltage_along_feeder(buses, edges_df; vmin=0.94*230, vmax=1.10*230)
     p = plot(
         legend=false,
@@ -213,9 +233,9 @@ function plot_voltage_along_feeder(buses, edges_df; vmin=0.94*230, vmax=1.10*230
         ylabel="Voltage (V)",
         title="Voltage along feeder (snapshot)"
     )
+
     colors = Dict(1=>:blue, 2=>:red, 3=>:black)
 
-    # Only draw physical line segments (not transformers)
     line_edges = edges_df[edges_df.kind .== "line", :]
 
     drawn = 0
@@ -245,14 +265,10 @@ function plot_voltage_along_feeder(buses, edges_df; vmin=0.94*230, vmax=1.10*230
         end
     end
 
-    if drawn == 0
-        println("WARNING: no segments drawn in voltage-vs-distance plot.")
-        println("This usually means distances still didn't attach, or bus keys mismatch.")
-    end
-
     maxdist = maximum(get(b, "distance", 0.0) for b in values(buses))
     plot!(p, [0,maxdist], [vmin,vmin], linestyle=:dash, color=:red)
     plot!(p, [0,maxdist], [vmax,vmax], linestyle=:dash, color=:red)
+
     return p
 end
 
@@ -272,48 +288,83 @@ function plot_voltage_histogram(buses; vmin=0.94*230, vmax=1.10*230)
 end
 
 # -----------------------------
+# Load scaling helpers
+# -----------------------------
+"""
+Scale all loads in the engineering model by alpha.
+Multiplies both active (pd) and reactive (qd).
+Handles scalars or vectors.
+"""
+function scale_loads!(eng::Dict{String,Any}, alpha::Real)
+    haskey(eng, "load") || return eng
+
+    for (id, ld_any) in eng["load"]
+        ld = ld_any::Dict{String,Any}
+
+        for key in ("pd", "qd")
+            if haskey(ld, key)
+                v = ld[key]
+                if v isa Number
+                    ld[key] = alpha * v
+                elseif v isa AbstractVector
+                    ld[key] = alpha .* v
+                end
+            end
+        end
+    end
+
+    return eng
+end
+
+"""
+Compute simple voltage summary stats in pu from 'buses' Dict.
+We use min of (A,B,C) per bus.
+"""
+function voltage_stats_pu(buses::Dict{String,Dict{String,Any}}; vbase_ln=230.0)
+    vmins_pu = Float64[]
+    for b in values(buses)
+        vminV = min(b["vma"], b["vmb"], b["vmc"])
+        push!(vmins_pu, vminV / vbase_ln)
+    end
+
+    # Guard for empty
+    if isempty(vmins_pu)
+        return (min=NaN, q05=NaN, median=NaN, q95=NaN)
+    end
+
+    sort!(vmins_pu)
+    q(p) = vmins_pu[clamp(Int(ceil(p * length(vmins_pu))), 1, length(vmins_pu))]
+
+    return (
+        min = minimum(vmins_pu),
+        q05 = q(0.05),
+        median = q(0.50),
+        q95 = q(0.95)
+    )
+end
+
+# -----------------------------
 # 1) Parse engineering model
 # -----------------------------
 println("Parsing: ", master_dss)
-eng = PMD.parse_file(master_dss, transformations=[PMD.transform_loops!])
+eng0 = PMD.parse_file(master_dss, transformations=[PMD.transform_loops!])
 
-println("eng counts: buses=", count_dict(eng,"bus"),
-        " lines=", count_dict(eng,"line"),
-        " loads=", count_dict(eng,"load"),
-        " transformers=", count_dict(eng,"transformer"))
+println("eng counts: buses=", count_dict(eng0,"bus"),
+        " lines=", count_dict(eng0,"line"),
+        " loads=", count_dict(eng0,"load"),
+        " transformers=", count_dict(eng0,"transformer"))
 
-eng["settings"]["sbase_default"] = 1
-eng["voltage_source"]["source"]["rs"] .= 0
-eng["voltage_source"]["source"]["xs"] .= 0
+eng0["voltage_source"]["source"]["rs"] .= 0
+eng0["voltage_source"]["source"]["xs"] .= 0
 
-SOURCE_BUS = pick_source_bus_eng(eng)
+SOURCE_BUS = pick_source_bus_eng(eng0)
 println("Chosen SOURCE_BUS for distances: ", SOURCE_BUS)
 
 # -----------------------------
-# 2) Transform to math model
+# 2) Build edge list and distances (from eng0, not scaled)
 # -----------------------------
-math = PMD.transform_data_model(eng; multinetwork=false, kron_reduce=true, phase_project=true)
-
-println("math counts: buses=", count_dict(math,"bus"),
-        " loads=", count_dict(math,"load"))
-
-# -----------------------------
-# 3) Solve PF snapshot
-# -----------------------------
-ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 1, "sb" => "yes")
-
-println("Solving unbalanced PF (IVRUPowerModel)...")
-pf = PMD.solve_mc_pf(math, PMD.IVRUPowerModel, ipopt)
-
-println("PF status: ", pf["termination_status"])
-println("solution bus count: ", haskey(pf["solution"], "bus") ? length(pf["solution"]["bus"]) : 0)
-
-# -----------------------------
-# 4) Build edge list (lines + transformers) and compute distances
-# -----------------------------
-edges_lines = make_edges_from_lines(eng)
-edges_tx    = make_edges_from_transformers(eng)
-
+edges_lines = make_edges_from_lines(eng0)
+edges_tx    = make_edges_from_transformers(eng0)
 edges = vcat(edges_lines, edges_tx)
 
 println("edge counts: lines=", nrow(edges_lines), " transformers=", nrow(edges_tx), " total=", nrow(edges))
@@ -322,11 +373,88 @@ dist = compute_bus_distances(edges; source_bus=lowercase(SOURCE_BUS))
 println("Reachable buses from ", lowercase(SOURCE_BUS), ": ", length(dist))
 
 # -----------------------------
-# 5) Extract voltages (keyed by eng names) and attach distances
+# 3) Choose alpha (fixed or sweep)
 # -----------------------------
-buses = solved_bus_vm_volts_keyed_by_eng(pf, math; vbase_ln=VBASE_LN)
-println("extracted bus count (keyed by eng names): ", length(buses))
+ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0, "sb" => "yes")
 
+function run_pf_with_alpha(eng_template, alpha)
+    eng = deepcopy(eng_template)
+    scale_loads!(eng, alpha)
+
+    math = PMD.transform_data_model(eng; multinetwork=false, kron_reduce=true, phase_project=true)
+    pf = PMD.solve_mc_pf(math, PMD.IVRUPowerModel, ipopt)
+
+    buses = solved_bus_vm_volts_keyed_by_eng(pf, math; vbase_ln=VBASE_LN)
+    stats = voltage_stats_pu(buses; vbase_ln=VBASE_LN)
+
+    return (pf=pf, math=math, buses=buses, stats=stats)
+end
+
+chosen_alpha = LOAD_ALPHA
+sweep_df = DataFrame()
+
+if DO_ALPHA_SWEEP
+    rows = NamedTuple[]
+    best_alpha = nothing
+    best_score = Inf
+
+    for a in ALPHAS
+        res = run_pf_with_alpha(eng0, a)
+        st = res.stats
+
+        # Skip failed cases
+        if isnan(st.min) || isnan(st.q05)
+            continue
+        end
+
+        score =
+            PICK_POLICY == :closest_min ? abs(st.min - TARGET_MIN_PU) :
+            abs(st.q05 - TARGET_Q05_PU)
+
+        push!(rows, (alpha=a, vmin_pu=st.min, vq05_pu=st.q05, vmed_pu=st.median, vq95_pu=st.q95, score=score))
+
+        if score < best_score
+            best_score = score
+            best_alpha = a
+        end
+    end
+
+    sweep_df = DataFrame(rows)
+    sort!(sweep_df, :score)
+
+    if nrow(sweep_df) == 0
+        error("Alpha sweep produced no valid results. Check solve status / data.")
+    end
+
+    chosen_alpha = best_alpha
+    println("Chosen alpha from sweep = ", chosen_alpha)
+
+    CSV.write(joinpath(TBLDIR, "baseline_alpha_sweep.csv"), sweep_df)
+end
+
+println("Using LOAD_ALPHA = ", chosen_alpha)
+
+# -----------------------------
+# 4) Run PF with chosen alpha
+# -----------------------------
+println("Solving unbalanced PF (IVRUPowerModel) with load scaling...")
+res = run_pf_with_alpha(eng0, chosen_alpha)
+pf   = res.pf
+math = res.math
+buses = res.buses
+
+println("PF status: ", pf["termination_status"])
+println("solution bus count: ", haskey(pf["solution"], "bus") ? length(pf["solution"]["bus"]) : 0)
+
+st = res.stats
+println("Voltage stats (min-phase per bus, pu): min=", round(st.min, digits=4),
+        " q05=", round(st.q05, digits=4),
+        " median=", round(st.median, digits=4),
+        " q95=", round(st.q95, digits=4))
+
+# -----------------------------
+# 5) Attach distances
+# -----------------------------
 matched = 0
 for (bus, d) in dist
     if haskey(buses, bus)
@@ -343,14 +471,14 @@ p1 = plot_voltage_along_feeder(buses, edges; vmin=VMIN_V, vmax=VMAX_V)
 p2 = plot_voltage_histogram(buses; vmin=VMIN_V, vmax=VMAX_V)
 p  = plot(p1, p2, layout=(1,2), size=(1100,450))
 
-savefig(p1, joinpath(FIGDIR, "baseline_voltage_along.png"))
-savefig(p2, joinpath(FIGDIR, "baseline_voltage_hist.png"))
-savefig(p,  joinpath(FIGDIR, "baseline_voltage_combined.png"))
+savefig(p1, joinpath(FIGDIR, "baseline_voltage_along_alpha_$(chosen_alpha).png"))
+savefig(p2, joinpath(FIGDIR, "baseline_voltage_hist_alpha_$(chosen_alpha).png"))
+savefig(p,  joinpath(FIGDIR, "baseline_voltage_combined_alpha_$(chosen_alpha).png"))
 
 println("Saved figures to: ", FIGDIR)
 
 # -----------------------------
-# 7) CSV table
+# 7) CSV tables
 # -----------------------------
 rows = NamedTuple[]
 for (bus, b) in buses
@@ -367,8 +495,13 @@ end
 
 df = DataFrame(rows)
 sort!(df, :vmin)
-CSV.write(joinpath(TBLDIR, "baseline_bus_voltages_sorted_by_vmin.csv"), df)
+CSV.write(joinpath(TBLDIR, "baseline_bus_voltages_sorted_by_vmin_alpha_$(chosen_alpha).csv"), df)
 
-println("Saved table to: ", TBLDIR)
+# Save the chosen alpha and headline stats
+meta = DataFrame([
+    (net=NET, alpha=chosen_alpha, vmin_pu=st.min, vq05_pu=st.q05, vmed_pu=st.median, vq95_pu=st.q95)
+])
+CSV.write(joinpath(TBLDIR, "baseline_alpha_chosen.csv"), meta)
+
+println("Saved tables to: ", TBLDIR)
 println("Done.")
-    
