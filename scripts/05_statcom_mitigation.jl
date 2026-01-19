@@ -2,7 +2,7 @@
 # - Baseline PF -> weakest bus
 # - Add STATCOM (reactive-only generator)
 # - Sweep STATCOM rating and solve OPF
-# - Optional: add inverter-loss branches using rosetta_distribution_opf (RPMD)
+# - add inverter-loss branches using rosetta_distribution_opf (RPMD)
 
 import Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
@@ -38,9 +38,7 @@ VMAX_PU = 1.10
 # sweep sizes (kVAr per phase as a human-friendly knob)
 QCAP_KVAR_LIST = [0.0, 25.0, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0]
 
-# If you really want to reuse Rahmat/Rosetta inverter-loss modeling:
 USE_RPMD_LOSSES = false
-
 
 # -----------------------------
 # Helpers
@@ -163,7 +161,6 @@ function add_statcom!(math::Dict{String,Any}, bus_id::String; qcap_model::Float6
     template["gen_bus"] = bus["index"]
     template["connections"] = collect(1:nconn)
 
-    # this is the key your error is complaining about
     template["gen_status"] = 1
 
     # reactive-only device
