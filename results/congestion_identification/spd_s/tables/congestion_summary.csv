@@ -1,0 +1,2 @@
+net,load_alpha,pf_status,n_buses,vmin_pu,vmax_pu,n_under,n_over,top_branch_s,top_branch_id
+spd_s,1.0,LOCALLY_SOLVED,270,1.0022399331744325,1.0104886330870715,0,0,0.0005024059735733724,267

@@ -1,0 +1,2 @@
+net,load_alpha,pf_status,vmin_pu,vq05_pu,vmed_pu,vq95_pu
+spd_r,1.0,LOCALLY_SOLVED,1.01,1.0100013293489496,1.0100013293489496,1.0100013293489496

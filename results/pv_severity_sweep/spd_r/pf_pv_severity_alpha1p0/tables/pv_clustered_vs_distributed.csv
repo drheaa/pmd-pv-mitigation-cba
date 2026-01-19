@@ -1,0 +1,3 @@
+net,case,pv_kw_per_phase_each,pv1_bus,pv2_bus,load_alpha,status,vmin_pu,vmax_pu,n_under,n_over
+spd_r,clustered,5.0,11022643,11022643,1.0,LOCALLY_SOLVED,1.01,1.01000132934887,0,0
+spd_r,distributed,5.0,11022643,10987352,1.0,LOCALLY_SOLVED,1.01,1.01000132934887,0,0
