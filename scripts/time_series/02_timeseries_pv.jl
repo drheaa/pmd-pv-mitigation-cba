@@ -43,14 +43,14 @@ ROOT = joinpath(@__DIR__, "../..")
 
 include(joinpath(ROOT, "src/read_functions.jl"))
 
-NET = "spd_s"
-NET = "spd_s_4w"
-master_dss = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET, "master_scaled.dss")
+NET_3w = "spd_s"
+NET_4w = "spd_s_4w"
+master_dss = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET_4w, "master_scaled.dss")
 
 YEAR = 2023
 STRIDE = 4
 
-BASELINE_OUTDIR = joinpath(ROOT, "results", "time_series", "baseline_pf", NET, "year=$(YEAR)_stride=$(STRIDE)")
+BASELINE_OUTDIR = joinpath(ROOT, "results", "time_series", "baseline_pf", NET_3w, "year=$(YEAR)_stride=$(STRIDE)")
 BASELINE_CSV    = joinpath(BASELINE_OUTDIR, "tables", "timeseries_baseline_pf_metrics.csv")
 
 # PV settings
@@ -110,15 +110,15 @@ function solve_pf(eng::Dict{String,Any})
     return pf, math
 end
 
-function pf_metrics(pf::Dict{String,Any}; vmin_pu=0.94, vmax_pu=1.10)
+function pf_metrics(pf::Dict{String,Any}; vmin_pu=0.9, vmax_pu=1.10)
     sol_bus = pf["solution"]["bus"]
     vmins = Float64[]
     vmaxs = Float64[]
 
     for sb in values(sol_bus)
         vm =
-            haskey(sb, "vm") ? sb["vm"] :
-            (haskey(sb, "vr") && haskey(sb, "vi")) ? sqrt.(sb["vr"].^2 .+ sb["vi"].^2) :
+            haskey(sb, "vm") ? sb["vm"][1:3] :
+            (haskey(sb, "vr") && haskey(sb, "vi")) ? sqrt.(sb["vr"][1:3].^2 .+ sb["vi"][1:3].^2) :
             nothing
         vm === nothing && continue
 
@@ -457,7 +457,7 @@ function pick_pv_bus_auto(eng::Dict{String,Any}, dist::Dict{String,Float64})
     return first(keys(eng["bus"])) |> string
 end
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 5) Load baseline CSV and select timesteps
 # --------------------------------------------------
 
@@ -485,6 +485,11 @@ println("Score range: min=", minimum(df_sel.score), " max=", maximum(df_sel.scor
 
 println("\nParsing feeder: ", master_dss)
 eng0 = PMD.parse_file(master_dss, transformations=[PMD.transform_loops!, reduce_lines!])
+math0 = PMD.transform_data_model(eng0; kron_reduce=false, phase_project=false)
+PMD.add_start_vrvi!(math0)
+pf0 = PMD.solve_mc_opf(math0, PMD.IVRENPowerModel, ipopt)
+m0 = pf_metrics(pf0; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
+
 
 scale_loads!(eng0, LOAD_ALPHA_BASE)
 print_baseline_load_summary(eng0)
@@ -497,7 +502,7 @@ println("\nDistance reference bus: ", source_bus)
 pv_bus = (PV_BUS == "AUTO") ? pick_pv_bus_auto(eng0, dist) : PV_BUS
 println("\nChosen PV bus: ", pv_bus)
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 7) Loop selected timesteps: baseline vs PV
 # --------------------------------------------------
 
@@ -510,10 +515,9 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     # ---- baseline at timestep k ----
     eng_base = deepcopy(eng0)
     scale_loads!(eng_base, a)
-    pf_base, math_base = solve_pf(eng_base)
-    math_base = PMD.transform_data_model(eng_base; kron_reduce=true, phase_project=true)
-    # PMD.add_start_vrvi!(math_base)
-    pf_base = PMD.solve_mc_pf(math_base, PMD.IVRUPowerModel, ipopt)
+    math_base = PMD.transform_data_model(eng_base; kron_reduce=false, phase_project=false)
+    PMD.add_start_vrvi!(math_base)
+    pf_base = PMD.solve_mc_opf(math_base, PMD.IVRENPowerModel, ipopt)
     # pf_base, math_base = solve_pf(eng_base)
     m_base = pf_metrics(pf_base; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
@@ -521,9 +525,9 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     eng_pv = deepcopy(eng0)
     scale_loads!(eng_pv, a)
     pv_action, pv_load_id = add_pv_negative_load!(eng_pv, pv_bus, PV_KW_PER_PHASE, PV_PHASES)
-    math_pv = PMD.transform_data_model(eng_pv; multinetwork=false, kron_reduce=true, phase_project=true)
-    # PMD.add_start_vrvi!(math_pv)
-    pf_pv = PMD.solve_mc_pf(math_pv, PMD.IVRUPowerModel, ipopt)
+    math_pv = PMD.transform_data_model(eng_pv; kron_reduce=false, phase_project=false)
+    PMD.add_start_vrvi!(math_pv)
+    pf_pv = PMD.solve_mc_opf(math_pv, PMD.IVRENPowerModel, ipopt)
     # pf_pv, math_pv = solve_pf(eng_pv)
     m_pv = pf_metrics(pf_pv; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
@@ -531,7 +535,7 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     eng_stc = deepcopy(eng0)
     scale_loads!(eng_stc, a)
     pv_action, pv_load_id = add_pv_negative_load!(eng_stc, pv_bus, PV_KW_PER_PHASE, PV_PHASES)
-    math_stc = PMD.transform_data_model(eng_stc; multinetwork=false, kron_reduce=true, phase_project=true)
+    math_stc = PMD.transform_data_model(eng_stc; kron_reduce=false, phase_project=false)
     ### add inverter lossy branches
     stc_ids = [string(i) for i=1:10] # what is stc id? [i for (i, gen) in data_math["gen"] if !occursin("source", gen["name"])]
     for gen_id in stc_ids
@@ -544,10 +548,8 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     PMD.add_start_vrvi!(math_stc)
     model_stc = PMD.instantiate_mc_model(math_stc, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
     # data_math_conv["gen"]["1"]["c_rating"] = [30 ; 30 ; 30 ; 30] / Ibase   # here you can change STATCOM ratings
-    pf_stc = PMD.optimize_model!(model_stc, optimizer=ipopt_solver)
+    pf_stc = PMD.optimize_model!(model_stc, optimizer=ipopt)
 
-    # pf_stc = PMD.solve_mc_pf(math_stc, PMD.IVRUPowerModel, ipopt)
-    # pf_stc, math_stc = solve_pf(eng_stc)
     m_stc = pf_metrics(pf_stc; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
 

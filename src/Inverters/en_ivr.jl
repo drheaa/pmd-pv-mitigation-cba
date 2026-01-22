@@ -367,8 +367,8 @@ function constraint_mc_generator_current_wye(pm::PMD.AbstractExplicitNeutralIVRM
     PMD.var(pm, nw, :crg_bus)[id] = PMD._merge_bus_flows(pm, [crg..., -sum(crg)], connections)
     PMD.var(pm, nw, :cig_bus)[id] = PMD._merge_bus_flows(pm, [cig..., -sum(cig)], connections)
 
-    JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :crg_bus)[id]) == 0)
-    JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :cig_bus)[id]) == 0)
+    # JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :crg_bus)[id]) == 0)
+    # JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :cig_bus)[id]) == 0)
 end
 
 
