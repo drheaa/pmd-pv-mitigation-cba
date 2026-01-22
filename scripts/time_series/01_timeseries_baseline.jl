@@ -41,7 +41,7 @@ PMD.silence!()
 ROOT = joinpath(@__DIR__, "../..")
 
 # Choose one feeder
-NET = "spd_s"
+NET = "spd_u"
 master_dss = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET, "master_scaled.dss")
 
 # Optional bus coordinates file for topology plotting
@@ -69,7 +69,7 @@ VBASE_LN = 230.0
 
 # Base scaling already used in snapshot work
 # This is separated from time-series scaling
-LOAD_ALPHA_BASE = 1.0
+LOAD_ALPHA_BASE = 2.5
 
 # STRIDE controls how many timesteps are skipped
 # STRIDE=1 runs all 17520 steps
@@ -336,15 +336,22 @@ function compute_bus_distances(lines_df::DataFrame; source_bus::String)
     return dist
 end
 
-# Extract solved bus voltage magnitudes (per phase) in volts
-# buses_dict is keyed by bus name
-function solved_bus_vm_volts(pf::Dict{String,Any}, math::Dict{String,Any}; vbase_ln::Float64)
+# Extract solved bus voltages in volts.
+# Returns two dictionaries:
+# 1) buses_by_name: keyed by math bus "name"
+# 2) buses_by_id: keyed by math bus id (the key in math["bus"])
+#
+# Reason: distance keys come from engineering line data, and sometimes match bus ids,
+# sometimes match bus names. This keeps both so the rest of the script can choose.
+function solved_bus_vm_volts_dual(pf::Dict{String,Any}, math::Dict{String,Any}; vbase_ln::Float64)
     sol_bus = pf["solution"]["bus"]
-    buses_dict = Dict{String, Dict{String,Any}}()
+
+    buses_by_name = Dict{String, Dict{String,Any}}()
+    buses_by_id   = Dict{String, Dict{String,Any}}()
 
     for (bus_id, bus_data_any) in math["bus"]
         bus_data = bus_data_any::Dict{String,Any}
-        name = bus_data["name"]
+        name = string(bus_data["name"])
 
         if !haskey(sol_bus, bus_id)
             continue
@@ -361,14 +368,17 @@ function solved_bus_vm_volts(pf::Dict{String,Any}, math::Dict{String,Any}; vbase
 
         vmV = vm_pu .* vbase_ln
 
-        buses_dict[name] = Dict(
+        entry = Dict(
             "vma" => [vmV[1]],
             "vmb" => length(vmV) >= 2 ? [vmV[2]] : [vmV[1]],
             "vmc" => length(vmV) >= 3 ? [vmV[3]] : [vmV[1]]
         )
+
+        buses_by_name[name] = deepcopy(entry)
+        buses_by_id[string(bus_id)] = deepcopy(entry)
     end
 
-    return buses_dict
+    return buses_by_name, buses_by_id
 end
 
 # Plot voltage magnitude along feeder (distance vs volts)
@@ -668,14 +678,22 @@ for i in 1:nplot
     pf, math = solve_pf(eng)
 
     # extract bus voltages in volts
-    buses_dict = solved_bus_vm_volts(pf, math; vbase_ln=VBASE_LN)
+    buses_by_name, buses_by_id = solved_bus_vm_volts_dual(pf, math; vbase_ln=VBASE_LN)
 
-    # attach distance to each bus entry for plotting
+    # Attach distances using whichever keying matches the dist dictionary best
+    hits_id = count(k -> haskey(buses_by_id, k), keys(dist))
+    hits_name = count(k -> haskey(buses_by_name, k), keys(dist))
+
+    buses_dict = hits_id >= hits_name ? buses_by_id : buses_by_name
+
     for (bus, d) in dist
         if haskey(buses_dict, bus)
             buses_dict[bus]["distance"] = d
         end
     end
+
+println("Distance mapping hits: by_id=", hits_id, " by_name=", hits_name)
+
 
     vminV = VMIN_PU * VBASE_LN
     vmaxV = VMAX_PU * VBASE_LN

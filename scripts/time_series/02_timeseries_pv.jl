@@ -457,7 +457,7 @@ function pick_pv_bus_auto(eng::Dict{String,Any}, dist::Dict{String,Float64})
     return first(keys(eng["bus"])) |> string
 end
 
-## --------------------------------------------------
+# --------------------------------------------------
 # 5) Load baseline CSV and select timesteps
 # --------------------------------------------------
 
@@ -510,6 +510,7 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     # ---- baseline at timestep k ----
     eng_base = deepcopy(eng0)
     scale_loads!(eng_base, a)
+    pf_base, math_base = solve_pf(eng_base)
     math_base = PMD.transform_data_model(eng_base; kron_reduce=true, phase_project=true)
     # PMD.add_start_vrvi!(math_base)
     pf_base = PMD.solve_mc_pf(math_base, PMD.IVRUPowerModel, ipopt)
@@ -548,7 +549,6 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     # pf_stc = PMD.solve_mc_pf(math_stc, PMD.IVRUPowerModel, ipopt)
     # pf_stc, math_stc = solve_pf(eng_stc)
     m_stc = pf_metrics(pf_stc; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
-
 
 
     push!(rows, (
