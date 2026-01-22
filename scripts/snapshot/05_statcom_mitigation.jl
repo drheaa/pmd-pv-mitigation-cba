@@ -5,8 +5,8 @@
 # - add inverter-loss branches using rosetta_distribution_opf (RPMD)
 
 import Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-Pkg.instantiate()
+# Pkg.activate(joinpath(@__DIR__, ".."))
+# Pkg.instantiate()
 
 using PowerModelsDistribution
 using JuMP
@@ -21,7 +21,8 @@ PMD.silence!()
 # -----------------------------
 # 0) User edits
 # -----------------------------
-ROOT = "/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments"
+# ROOT = "/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments"
+ROOT = joinpath(@__DIR__, "..", "..")
 FEEDER = "spd_s"
 
 master_dss = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", FEEDER, "master_scaled.dss")

@@ -1,6 +1,6 @@
 import Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-Pkg.instantiate()
+# Pkg.activate(joinpath(@__DIR__, ".."))
+# Pkg.instantiate()
 
 using PowerModelsDistribution
 using JuMP

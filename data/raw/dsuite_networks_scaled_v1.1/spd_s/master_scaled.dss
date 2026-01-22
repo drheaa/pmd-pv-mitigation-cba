@@ -13,17 +13,18 @@ redirect lines_lbs_spd_s_scaled.dss
 redirect transformers_spd_s.dss
 redirect loads_spd_s.dss
 
-redirect statcom_locations.dss
-redirect sop_locations.dss
-redirect str_locations.dss
+redirect statcom_locations_gen.dss
+!redirect statcom_locations.dss
+!redirect sop_locations.dss
+!redirect str_locations.dss
 
 batchedit load.load* kw=1.0 kvar=0.0
 
-batchedit load.statcom_* kw=0.0 kvar=-1.0
-batchedit load.sop_a* kw=0.0 kvar=-0.3
-batchedit load.sop_b* kw=0.0 kvar=-0.3
-batchedit load.sop_x* kw=0.0 kvar=-0.2
-batchedit load.str_* kw=0.0 kvar=-0.08
+!batchedit load.statcom_* kw=0.0 kvar=-1.0
+!batchedit load.sop_a* kw=0.0 kvar=-0.3
+!batchedit load.sop_b* kw=0.0 kvar=-0.3
+!batchedit load.sop_x* kw=0.0 kvar=-0.2
+!batchedit load.str_* kw=0.0 kvar=-0.08
 
 calcv
 

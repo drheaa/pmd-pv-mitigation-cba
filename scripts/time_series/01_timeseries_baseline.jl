@@ -15,8 +15,8 @@
 # Later work can map different customer profiles to different loads and phases.
 
 import Pkg
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
-Pkg.instantiate()
+# Pkg.activate(joinpath(@__DIR__, "..", ".."))
+# Pkg.instantiate()
 
 using PowerModelsDistribution
 using JuMP
@@ -32,12 +32,13 @@ using Plots
 const PMD = PowerModelsDistribution
 PMD.silence!()
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 0) Settings that control the run
-# --------------------------------------------------
+## --------------------------------------------------
 
 # Project root
-ROOT = "/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments"
+# ROOT = "/mnt/c/Users/auc009/OneDrive - CSIRO/Documents/power-models-distribution/pmd_pv_experiments"
+ROOT = joinpath(@__DIR__, "../..")
 
 # Choose one feeder
 NET = "spd_s"
@@ -48,7 +49,7 @@ master_dss = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET, "master
 buscoords_csv = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET, "opendss_xy_$(NET)_scaled.csv")
 
 # Load profile folder and one year
-PROFILES_ROOT = joinpath(ROOT, "data/raw/dsuite_load_profiles/profiles")
+PROFILES_ROOT = joinpath(ROOT, "pmd_pv_experiments/profiles")
 YEAR = 2023
 
 # Pick one customer column from the parquet file
@@ -60,7 +61,7 @@ START_DATE = Date(YEAR, 1, 1)
 STEP_MINUTES = 30
 
 # Voltage thresholds used only for reporting (per unit)
-VMIN_PU = 0.94
+VMIN_PU = 0.9
 VMAX_PU = 1.10
 
 # Nominal LN voltage for converting pu to volts in plots
@@ -90,9 +91,9 @@ TBLDIR = joinpath(OUTDIR, "tables")
 mkpath(FIGDIR)
 mkpath(TBLDIR)
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 1) Helper functions for reading parquet files
-# --------------------------------------------------
+## --------------------------------------------------
 
 # Find the parquet file for the chosen year
 function find_parquet_for_year(profiles_root::String, year::Int)
@@ -505,7 +506,7 @@ function plot_topology_if_coords(lines_df::DataFrame, coords_csv::String; outpat
     return p
 end
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 5) Read one customer profile and turn it into alpha(t)
 # --------------------------------------------------
 
@@ -565,13 +566,13 @@ println("\nDistance reference bus: ", source_bus)
 topo_out = joinpath(FIGDIR, "topology.png")
 plot_topology_if_coords(lines_df, buscoords_csv; outpath=topo_out)
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 7) Time loop: apply alpha(t), run PF, store metrics
 # --------------------------------------------------
 
 rows = NamedTuple[]
 
-for k in 1:STRIDE:nrows
+for k in 1:STRIDE:100 # nrows
     # fresh copy per timestep, so scaling does not accumulate
     eng = deepcopy(eng0)
 

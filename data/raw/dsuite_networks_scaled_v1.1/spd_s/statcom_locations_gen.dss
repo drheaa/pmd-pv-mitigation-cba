@@ -1,0 +1,23 @@
+! chosen manually using master
+! ID here then replace in xxxx
+!17855759
+!12969125
+!12934941
+!13435075
+!13435074
+!14756890
+!12958003
+!9369082
+!17874064
+!12725180
+
+New PVSystem.Statcom1 phases=3 bus1=17855759 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom2 phases=3 bus1=12969125 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom3 phases=3 bus1=12934941 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom4 phases=3 bus1=13435075 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom5 phases=3 bus1=13435074 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom6 phases=3 bus1=12958003 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom7 phases=3 bus1=9369082 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom8 phases=3 bus1=17874064 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom0 phases=3 bus1=12725180 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
+New PVSystem.Statcom10 phases=3 bus1=14756890 kV=0.415 kVA=10 irrad=1.0 temperature=25 PF=1.0 mppt=0
