@@ -1,0 +1,3 @@
+solution keys: ["branch", "gen", "multiinfrastructure", "transformer", "settings", "multinetwork", "load", "bus", "per_unit"]
+branch id: 1
+branch fields: ["cr_fr", "qf", "ci_fr", "csi_fr", "qt", "csr_fr", "cr_to", "ci_to", "pt", "pf"]

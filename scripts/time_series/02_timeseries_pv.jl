@@ -75,7 +75,7 @@ OUTDIR = joinpath(
     "results",
     "time_series",
     "pv_pf",
-    NET,
+    NET_4W,
     "year=$(YEAR)_stride=$(STRIDE)",
     "pvkw=$(PV_KW_PER_PHASE)_ph=$(join(PV_PHASES, '_'))_K=$(N_PV_STRESS)"
 )
@@ -356,6 +356,71 @@ function plot_voltage_combined_snap(buses_dict::Dict{String,Dict{String,Any}}, l
 end
 
 # --------------------------------------------------
+# 2b) Substation current helpers (baseline vs PV vs STATCOM)
+# --------------------------------------------------
+# Goal: extract phase current magnitudes at feeder head from the first solved branch.
+# Keys vary across PMD versions, so this tries common field pairs.
+
+function _phasor_from(obj::Dict{String,Any}, rkey::String, ikey::String, idx::Int)
+    (haskey(obj, rkey) && haskey(obj, ikey)) || return nothing
+    r = obj[rkey]; im = obj[ikey]
+    (r isa AbstractVector && im isa AbstractVector) || return nothing
+    (length(r) >= idx && length(im) >= idx) || return nothing
+    return complex(Float64(r[idx]), Float64(im[idx]))
+end
+
+function _seq_components(Aa::Complex, Ab::Complex, Ac::Complex)
+    a = cis(2pi / 3)
+    A0 = (Aa + Ab + Ac) / 3
+    A1 = (Aa + a * Ab + a^2 * Ac) / 3
+    A2 = (Aa + a^2 * Ab + a * Ac) / 3
+    return (A0=A0, A1=A1, A2=A2)
+end
+
+function feeder_head_current_metrics(pf::Dict{String,Any})
+    sol = pf["solution"]
+    if !haskey(sol, "branch") || isempty(sol["branch"])
+        return (Ia=NaN, Ib=NaN, Ic=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)
+    end
+
+    bid = first(keys(sol["branch"]))
+    br  = sol["branch"][bid]
+
+    keypairs = [
+        ("cr_fr", "ci_fr"),
+        ("cfr",   "cfi"),
+        ("cr",    "ci"),
+        ("ctr",   "cti"),
+    ]
+
+    for (rk, ik) in keypairs
+        Ia = _phasor_from(br, rk, ik, 1)
+        Ib = _phasor_from(br, rk, ik, 2)
+        Ic = _phasor_from(br, rk, ik, 3)
+        if Ia !== nothing && Ib !== nothing && Ic !== nothing
+            ma = abs(Ia); mb = abs(Ib); mc = abs(Ic)
+            seq = _seq_components(Ia, Ib, Ic)
+            I0 = abs(seq.A0)
+            I1 = abs(seq.A1)
+            I2 = abs(seq.A2)
+            r  = I1 > 1e-12 ? I2 / I1 : NaN
+            return (Ia=ma, Ib=mb, Ic=mc, Imean=(ma+mb+mc)/3, Imax=max(ma,mb,mc), I0=I0, I2=I2, I2_over_I1=r)
+        end
+    end
+
+    return (Ia=NaN, Ib=NaN, Ic=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)
+end
+
+function duration_curve(values::AbstractVector{<:Real}; high_is_worse::Bool=true)
+    v = Float64.(values)
+    v = filter(isfinite, v)
+    isempty(v) && return (p=Float64[], x=Float64[])
+    x = sort(v; rev=high_is_worse)
+    p = collect(range(0, 100; length=length(x)))
+    return (p=p, x=x)
+end
+
+# --------------------------------------------------
 # 3) PV-stress selection (proxy PV + low alpha)
 # --------------------------------------------------
 
@@ -505,11 +570,21 @@ println("\nChosen PV bus: ", pv_bus)
 ## --------------------------------------------------
 # 7) Loop selected timesteps: baseline vs PV
 # --------------------------------------------------
+# Storage for comparison plots across selected timesteps
+t_vec = DateTime[]
+base_Ia = Float64[]; base_Ib = Float64[]; base_Ic = Float64[]; base_Imean = Float64[]; base_Imax = Float64[]
+pv_Ia   = Float64[]; pv_Ib   = Float64[]; pv_Ic   = Float64[]; pv_Imean   = Float64[]; pv_Imax   = Float64[]
+stc_Ia  = Float64[]; stc_Ib  = Float64[]; stc_Ic  = Float64[]; stc_Imean  = Float64[]; stc_Imax  = Float64[]
+
+base_I0 = Float64[]; base_I2 = Float64[]; base_I2r = Float64[]
+pv_I0   = Float64[]; pv_I2   = Float64[]; pv_I2r   = Float64[]
+stc_I0  = Float64[]; stc_I2  = Float64[]; stc_I2r  = Float64[]
 
 rows = NamedTuple[]
+last_k = 100
 
-for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
-    k = Int(r.timestep)
+for k in 1:STRIDE:last_k
+    r = df_sel[k, :]
     a = Float64(r.alpha_t)
 
     # ---- baseline at timestep k ----
@@ -552,6 +627,24 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
 
     m_stc = pf_metrics(pf_stc; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
+    # ---- substation current metrics (phase magnitudes + sequence indicators) ----
+    Ibase = feeder_head_current_metrics(pf_base)
+    Ipv   = feeder_head_current_metrics(pf_pv)
+    Istc  = feeder_head_current_metrics(pf_stc)
+
+    push!(t_vec, r.time)
+
+    push!(base_Ia, Ibase.Ia); push!(base_Ib, Ibase.Ib); push!(base_Ic, Ibase.Ic)
+    push!(base_Imean, Ibase.Imean); push!(base_Imax, Ibase.Imax)
+    push!(base_I0, Ibase.I0); push!(base_I2, Ibase.I2); push!(base_I2r, Ibase.I2_over_I1)
+
+    push!(pv_Ia, Ipv.Ia); push!(pv_Ib, Ipv.Ib); push!(pv_Ic, Ipv.Ic)
+    push!(pv_Imean, Ipv.Imean); push!(pv_Imax, Ipv.Imax)
+    push!(pv_I0, Ipv.I0); push!(pv_I2, Ipv.I2); push!(pv_I2r, Ipv.I2_over_I1)
+
+    push!(stc_Ia, Istc.Ia); push!(stc_Ib, Istc.Ib); push!(stc_Ic, Istc.Ic)
+    push!(stc_Imean, Istc.Imean); push!(stc_Imax, Istc.Imax)
+    push!(stc_I0, Istc.I0); push!(stc_I2, Istc.I2); push!(stc_I2r, Istc.I2_over_I1)
 
     push!(rows, (
         net = NET,
@@ -578,6 +671,9 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
     ))
 
     # ---- plots (same mapping logic as 01) ----
+    vminV = VMIN_PU * VBASE_LN
+    vmaxV = VMAX_PU * VBASE_LN
+
     buses_base_by_name, buses_base_by_id = solved_bus_vm_volts_dual(pf_base, math_base; vbase_ln=VBASE_LN)
     buses_pv_by_name,   buses_pv_by_id   = solved_bus_vm_volts_dual(pf_pv,   math_pv;   vbase_ln=VBASE_LN)
 
@@ -594,14 +690,27 @@ for (rank, r) in enumerate(eachrow(df_sel[1:1,:]))
         haskey(buses_pv,   bus) && (buses_pv[bus]["distance"] = d)
     end
 
-    vminV = VMIN_PU * VBASE_LN
-    vmaxV = VMAX_PU * VBASE_LN
+    buses_stc_by_name, buses_stc_by_id = solved_bus_vm_volts_dual(pf_stc, math_stc; vbase_ln=VBASE_LN)
+    hits_id_stc   = count(b -> haskey(buses_stc_by_id, b), keys(dist))
+    hits_name_stc = count(b -> haskey(buses_stc_by_name, b), keys(dist))
+    buses_stc = hits_id_stc >= hits_name_stc ? buses_stc_by_id : buses_stc_by_name
 
+    for (bus, d) in dist
+        haskey(buses_stc, bus) && (buses_stc[bus]["distance"] = d)
+    end
+
+    #panel for direct comparison in one figure
     p_base = plot_voltage_combined_snap(buses_base, lines_df; t=1, Vthreshold=1000.0, vminV=vminV, vmaxV=vmaxV)
     savefig(p_base, joinpath(FIGDIR, "rank=$(rank)_timestep=$(k)_baseline.png"))
 
     p_pv = plot_voltage_combined_snap(buses_pv, lines_df; t=1, Vthreshold=1000.0, vminV=vminV, vmaxV=vmaxV)
     savefig(p_pv, joinpath(FIGDIR, "rank=$(rank)_timestep=$(k)_pv.png"))
+
+    p_stc = plot_voltage_combined_snap(buses_stc, lines_df; t=1, Vthreshold=1000.0, vminV=vminV, vmaxV=vmaxV)
+    savefig(p_stc, joinpath(FIGDIR, "rank=$(rank)_timestep=$(k)_statcom.png"))
+
+    p_panel = plot(p_base, p_pv, p_stc, layout=(1,3))
+    savefig(p_panel, joinpath(FIGDIR, "rank=$(rank)_timestep=$(k)_panel_base_pv_statcom.png"))
 
     println("Saved rank=", rank, " t=", k,
         " alpha_t=", a,
@@ -630,6 +739,69 @@ p2 = scatter(df_out.time, df_out.delta_vmax_pu;
     legend=false
 )
 savefig(p2, joinpath(FIGDIR, "delta_vmax_selected.png"))
+
+
+# --------------------------------------------------
+# 8) comparison plots across selected timesteps
+# --------------------------------------------------
+
+# Substation phase currents: baseline
+pI_base = plot(t_vec, base_Ia; label="phase a", xlabel="Time", ylabel="Substation current (A)",
+    title="Substation phase currents | baseline | selected timesteps")
+plot!(t_vec, base_Ib; label="phase b")
+plot!(t_vec, base_Ic; label="phase c")
+plot!(t_vec, base_Imean; label="mean")
+savefig(pI_base, joinpath(FIGDIR, "substation_currents_baseline.png"))
+
+# Substation phase currents: PV
+pI_pv = plot(t_vec, pv_Ia; label="phase a", xlabel="Time", ylabel="Substation current (A)",
+    title="Substation phase currents | PV | selected timesteps")
+plot!(t_vec, pv_Ib; label="phase b")
+plot!(t_vec, pv_Ic; label="phase c")
+plot!(t_vec, pv_Imean; label="mean")
+savefig(pI_pv, joinpath(FIGDIR, "substation_currents_pv.png"))
+
+# Substation phase currents: STATCOM
+pI_stc = plot(t_vec, stc_Ia; label="phase a", xlabel="Time", ylabel="Substation current (A)",
+    title="Substation phase currents | STATCOM | selected timesteps")
+plot!(t_vec, stc_Ib; label="phase b")
+plot!(t_vec, stc_Ic; label="phase c")
+plot!(t_vec, stc_Imean; label="mean")
+savefig(pI_stc, joinpath(FIGDIR, "substation_currents_statcom.png"))
+
+# Mean current comparison (single clean comparison figure)
+pI_mean = plot(t_vec, base_Imean; label="baseline", xlabel="Time", ylabel="Mean phase current (A)",
+    title="Substation mean phase current | baseline vs PV vs STATCOM")
+plot!(t_vec, pv_Imean; label="PV")
+plot!(t_vec, stc_Imean; label="STATCOM")
+savefig(pI_mean, joinpath(FIGDIR, "substation_current_mean_comparison.png"))
+
+# Peak phase current duration curves (load duration style)
+dc_base = duration_curve(base_Imax; high_is_worse=true)
+dc_pv   = duration_curve(pv_Imax;   high_is_worse=true)
+dc_stc  = duration_curve(stc_Imax;  high_is_worse=true)
+
+p_dc = plot(dc_base.p, dc_base.x; label="baseline", xlabel="Load percentile (%)", ylabel="Max phase current (A)",
+    title="Duration curve: max phase current | baseline vs PV vs STATCOM")
+plot!(dc_pv.p, dc_pv.x; label="PV")
+plot!(dc_stc.p, dc_stc.x; label="STATCOM")
+savefig(p_dc, joinpath(FIGDIR, "duration_i_max_phase_base_pv_statcom.png"))
+
+# Sequence ratio comparison (negative sequence indicator)
+p_i2r = plot(t_vec, base_I2r; label="baseline", xlabel="Time", ylabel="I2/I1",
+    title="Negative sequence ratio | baseline vs PV vs STATCOM")
+plot!(t_vec, pv_I2r; label="PV")
+plot!(t_vec, stc_I2r; label="STATCOM")
+savefig(p_i2r, joinpath(FIGDIR, "i2_over_i1_comparison.png"))
+
+# Save a small table for the plot data
+curr_df = DataFrame(
+    time=t_vec,
+    base_Ia=base_Ia, base_Ib=base_Ib, base_Ic=base_Ic, base_Imean=base_Imean, base_Imax=base_Imax, base_I0=base_I0, base_I2=base_I2, base_I2r=base_I2r,
+    pv_Ia=pv_Ia, pv_Ib=pv_Ib, pv_Ic=pv_Ic, pv_Imean=pv_Imean, pv_Imax=pv_Imax, pv_I0=pv_I0, pv_I2=pv_I2, pv_I2r=pv_I2r,
+    stc_Ia=stc_Ia, stc_Ib=stc_Ib, stc_Ic=stc_Ic, stc_Imean=stc_Imean, stc_Imax=stc_Imax, stc_I0=stc_I0, stc_I2=stc_I2, stc_I2r=stc_I2r
+)
+CSV.write(joinpath(TBLDIR, "substation_current_comparison_selected.csv"), curr_df)
 
 println("\nSaved results to: ", OUTDIR)
 println("Done.")
