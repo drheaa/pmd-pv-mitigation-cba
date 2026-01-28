@@ -1,4 +1,6 @@
 # Inverter - Variables
+import InfrastructureModels
+const IM = InfrastructureModels
 "given a variable that is indexed by component ids, builds the standard solution structure"
 function sol_component_value_comp(aim::IM.AbstractInfrastructureModel, it::Symbol, n::Int, comp_name::Symbol, field_name::Symbol, comp_id, variable)
     @assert !haskey(IM.sol(aim, it, n, comp_name, comp_id), field_name)
