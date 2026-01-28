@@ -51,7 +51,7 @@ BASELINE_CSV    = joinpath(BASELINE_OUTDIR, "tables", "timeseries_baseline_pf_me
 
 # PV settings
 PV_BUS          = "AUTO"
-PV_KW_PER_PHASE = 10.0          # increase if PV impact remains too small
+PV_KW_PER_PHASE = 50.0          # increase if PV impact remains too small
 PV_PHASES       = [1]           # single-phase PV on phase A by default
 
 # Selection settings (PV-stress)
