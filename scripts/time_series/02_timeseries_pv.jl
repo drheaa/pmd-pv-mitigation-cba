@@ -85,7 +85,7 @@ FIGDIR = joinpath(OUTDIR, "figures")
 TBLDIR = joinpath(OUTDIR, "tables")
 mkpath(FIGDIR); mkpath(TBLDIR)
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 1) Helpers: scaling, metrics, PV proxy, PV injection
 # --------------------------------------------------
 
@@ -143,7 +143,7 @@ end
 
 function add_pv_negative_load!(eng::Dict{String,Any}, pv_bus::String, pv_kw_per_phase::Float64, pv_phases::Vector{Int})
     haskey(eng, "load") || (eng["load"] = Dict{String,Any}())
-
+    
     # Prefer modifying an existing load at pv_bus
     for (lid, ld_any) in eng["load"]
         ld = ld_any::Dict{String,Any}
@@ -578,7 +578,7 @@ function fig11_like_voltage_seq_distributions(df_seq::DataFrame, outdir::String)
              joinpath(outdir, "fig11_like_V2_over_V1_scatter_median.png"))
 end
 
-# --------------------------------------------------
+## --------------------------------------------------
 # 6) Load baseline CSV and select PV-stress timesteps
 # --------------------------------------------------
 
@@ -686,7 +686,9 @@ end
 rows = NamedTuple[]
 seq_rows = NamedTuple[]
 
-for (rank, r) in enumerate(eachrow(df_sel))
+# for (rank, r) in enumerate(eachrow(df_sel))
+    rank=1
+    r = df_sel[1, :]
     k = Int(r.timestep)
     a = Float64(r.alpha_t)
     pv_pu = Float64(r.pv_pu)
@@ -695,21 +697,58 @@ for (rank, r) in enumerate(eachrow(df_sel))
     # Baseline
     eng_base = deepcopy(eng_base0)
     scale_loads!(eng_base, a)
-    pf_base, math_base = solve_pf_case(eng_base, ipopt)
+    math_base = PMD.transform_data_model(eng_base; kron_reduce=false, phase_project=false)
+    for (_, bus) in math_base["bus"]
+        bus["vmin"] .= 0.9
+        bus["vmax"] .= 1.1
+    end
+    PMD.add_start_vrvi!(math_base)
+    # pf_base = PMD.solve_mc_opf(math_base, PMD.IVRENPowerModel, ipopt)
+    model = PMD.instantiate_mc_model(math_base, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
+    pf_base = PMD.optimize_model!(model, optimizer=ipopt)
+    # pf_base, math_base = solve_pf_case(eng_base, ipopt)
     m_base = pf_metrics(pf_base; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
     # PV only
     eng_pv = deepcopy(eng_base0)
     scale_loads!(eng_pv, a)
     pv_action, pv_load_id = add_pv_negative_load!(eng_pv, pv_bus, pv_kw_eff, PV_PHASES)
-    pf_pv, math_pv = solve_pf_case(eng_pv, ipopt)
+    math_pv = PMD.transform_data_model(eng_pv; kron_reduce=false, phase_project=false)
+    for (_, bus) in math_pv["bus"]
+        bus["vmin"] .= 0.9
+        bus["vmax"] .= 1.1
+    end
+    PMD.add_start_vrvi!(math_pv)
+    # pf_pv = PMD.solve_mc_opf(math_pv, PMD.IVRENPowerModel, ipopt)
+    model = PMD.instantiate_mc_model(math_pv, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
+    pf_pv = PMD.optimize_model!(model, optimizer=ipopt)
+    # pf_pv, math_pv = solve_pf_case(eng_pv, ipopt)
     m_pv = pf_metrics(pf_pv; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
     # PV + STATCOM
     eng_stc = deepcopy(eng_stc0)
     scale_loads!(eng_stc, a)
-    pv_action2, pv_load_id2 = add_pv_negative_load!(eng_stc, pv_bus, pv_kw_eff, PV_PHASES)
-    pf_stc, math_stc = solve_statcom_case(eng_stc, ipopt)
+    # pv_action2, pv_load_id2 = add_pv_negative_load!(eng_stc, pv_bus, pv_kw_eff, PV_PHASES)
+    math_stc = PMD.transform_data_model(eng_stc; kron_reduce=false, phase_project=false)
+    for (_, bus) in math_stc["bus"]
+        bus["vmin"] .= 0.9
+        bus["vmax"] .= 1.1
+    end
+    # Inverter gen ids expected in master_scaled.dss
+    stc_ids = [string(i) for i in 1:10]
+    for gen_id in stc_ids
+        add_inverter_losses!(math_stc, gen_id; three_wire=false, c_rating_a=30*ones(3))
+    end
+    # Voltage unbalance constraint field used by the OPF builder
+    for (_, bus_any) in math_stc["bus"]
+        bus = bus_any::Dict{String,Any}
+        bus["vm_vuf_max"] = 0.02
+    end
+    PMD.add_start_vrvi!(math_stc)
+    model = PMD.instantiate_mc_model(math_stc, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
+    pf_stc = PMD.optimize_model!(model, optimizer=ipopt)
+    
+    # pf_stc, math_stc = solve_statcom_case(eng_stc, ipopt)
     m_stc = pf_metrics(pf_stc; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
     # Debug generator counts: baseline and PV should not contain 1..10
@@ -790,7 +829,50 @@ for (rank, r) in enumerate(eachrow(df_sel))
         " pv_Imax=", round(Ipv.Imax, digits=3),
         " stc_Imax=", round(Istc.Imax, digits=3)
     )
-end
+# end
+
+## ##########
+using Plots
+vm_base_a = [abs.(bus["vr"][1] + im*bus["vi"][1]) for (i, bus) in pf_base["solution"]["bus"]]
+vm_base_b = [abs.(bus["vr"][2] + im*bus["vi"][2]) for (i, bus) in pf_base["solution"]["bus"]]
+vm_base_c = [abs.(bus["vr"][3] + im*bus["vi"][3]) for (i, bus) in pf_base["solution"]["bus"]]
+
+vm_pv_a = [abs.(bus["vr"][1] + im*bus["vi"][1]) for (i, bus) in pf_pv["solution"]["bus"]]
+vm_pv_b = [abs.(bus["vr"][2] + im*bus["vi"][2]) for (i, bus) in pf_pv["solution"]["bus"]]
+vm_pv_c = [abs.(bus["vr"][3] + im*bus["vi"][3]) for (i, bus) in pf_pv["solution"]["bus"]]
+
+vm_stc_a = [abs.(bus["vr"][1] + im*bus["vi"][1]) for (i, bus) in pf_stc["solution"]["bus"]]
+vm_stc_b = [abs.(bus["vr"][2] + im*bus["vi"][2]) for (i, bus) in pf_stc["solution"]["bus"]]
+vm_stc_c = [abs.(bus["vr"][3] + im*bus["vi"][3]) for (i, bus) in pf_stc["solution"]["bus"]]
+
+plot(vm_base_a, label="base", xlabel="Bus index", color=:blue, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_base_b, label="base", xlabel="Bus index", color=:blue, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_base_c, label="base", xlabel="Bus index", color=:blue, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+
+plot!(vm_pv_a, label="pv", xlabel="Bus index", color=:green, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_pv_b, label="pv", xlabel="Bus index", color=:green, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_pv_c, label="pv", xlabel="Bus index", color=:green, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+
+plot!(vm_stc_a, label="stc", xlabel="Bus index", color=:red, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_stc_b, label="stc", xlabel="Bus index", color=:red, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+plot!(vm_stc_c, label="stc", xlabel="Bus index", color=:red, ylabel="Voltage magnitude (V)", title="Voltage magnitudes at timestep $(k)")
+
+
+
+### 
+# - increase the load pd, and also set qd to a fixed power factor (e.g., 0.9)
+# - calculate all voltage sequences at all buses for the three cases (x_seq_m[1:3] -> zero sequence, positive sequence, negative sequence)
+# - calculate all branch flow sequences at all branches for the three cases (x_seq_f[1:3] -> zero sequence, positive sequence, negative sequence)
+# - compare them
+
+c_base = [get_sequence_components(branch["cr_fr"][1:3]+im*branch["ci_fr"][1:3]) for (i, branch) in pf_stc["solution"]["branch"]]
+c_pv = [get_sequence_components(branch["cr_fr"][1:3]+im*branch["ci_fr"][1:3]) for (i, branch) in pf_stc["solution"]["branch"]]
+c_stc = [get_sequence_components(branch["cr_fr"][1:3]+im*branch["ci_fr"][1:3]) for (i, branch) in pf_stc["solution"]["branch"]]
+
+
+##################
+
+
 
 df_out = DataFrame(rows)
 CSV.write(joinpath(TBLDIR, "timeseries_pv_pf_selected_timesteps.csv"), df_out)

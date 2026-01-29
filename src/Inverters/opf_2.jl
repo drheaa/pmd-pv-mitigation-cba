@@ -122,8 +122,8 @@ function build_mc_opf_mx_Rhea(pm::PMD.AbstractExplicitNeutralIVRModel)
 
     # Objective
     # PMD.objective_mc_min_fuel_cost(pm)
-    # objective_mc_min_IUF(pm)
-    objective_mc_min_max_phase_current(pm)
+    objective_mc_min_IUF(pm)
+    # objective_mc_min_max_phase_current(pm)
     # objective_mc_min_ref_branch_loss(pm)
 end
 
