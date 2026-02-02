@@ -51,17 +51,17 @@ BASELINE_CSV    = joinpath(BASELINE_OUTDIR, "tables", "timeseries_baseline_pf_me
 
 # PV settings
 PV_BUS          = "AUTO"
-PV_KW_PER_PHASE = 50.0          # increase if PV impact remains too small
+PV_KW_PER_PHASE = 10.0          # increase if PV impact remains too small
 PV_PHASES       = [1]           # single-phase PV on phase A by default
 
-# Selection settings (PV-stress)
+# PV-stress
 N_PV_STRESS    = 30
 SKIP_NIGHT_PV  = true
-RANDOM_SEED    = 7
+RANDOM_SEED    = 42
 
 # 48-hour window for paper-style current plots (Fig6/Fig7/Fig9)
 WINDOW_HOURS   = 48
-WINDOW_STEPS   = Int(WINDOW_HOURS * 60 ÷ 30) + 1   # assumes 30-min baseline sampling
+WINDOW_STEPS   = Int(WINDOW_HOURS * 60 ÷ 30) + 1   # 30-min baseline sampling
 WINDOW_CENTER  = "BEST_STRESS"  # "BEST_STRESS" or "FIRST_STRESS"
 
 # Limits and conversion
@@ -70,7 +70,7 @@ VMAX_PU   = 1.10
 VBASE_LN  = 230.0
 
 # Baseline engineering scaling applied once, then alpha(t)
-LOAD_ALPHA_BASE = 2.5
+LOAD_ALPHA_BASE = 1.5    # scale baseline loads by this factor once at parsing and should be between 1.5 to 2.0
 
 # Solver
 ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0, "sb" => "yes")
@@ -90,90 +90,147 @@ mkpath(FIGDIR); mkpath(TBLDIR)
 # --------------------------------------------------
 
 function scale_loads!(eng::Dict{String,Any}, alpha::Real)
-    haskey(eng, "load") || return eng
-    for (_, ld_any) in eng["load"]
-        ld = ld_any::Dict{String,Any}
-        for k in ("pd_nom", "qd_nom", "pd", "qd")
-            if haskey(ld, k)
-                v = ld[k]
-                ld[k] = v isa Number ? alpha * v : alpha .* v
+    haskey(eng, "load") || return eng     # early exit if no loads
+    for (_, ld_any) in eng["load"]        # loop through every load object
+        ld = ld_any::Dict{String,Any}     # treat each load as a dictionary
+        for k in ("pd_nom", "qd_nom", "pd", "qd")   # for each power-related key, scale if it exists
+            if haskey(ld, k)     # only scale if the load actually has that field
+                v = ld[k]        # get the current value
+                ld[k] = v isa Number ? alpha * v : alpha .* v   # scale numbers vs vectors correctly
             end
         end
     end
+    return eng     # return the mutated dictionary
+end
+
+function add_load_q_from_pf!(eng::Dict{String,Any}; pf::Float64=0.95)    # add reactive power to loads based on specified power factor    
+    haskey(eng, "load") || return eng
+    pf = clamp(pf, 0.5, 0.999999)    # avoid invalid power factor values
+    q_factor = tan(acos(pf))  # Q = |P| * tan(arccos(pf))
+    println("DEBUG add_load_q_from_pf!: pf=", pf, " q_factor=", tan(acos(pf)))
+
+    for (_, ld_any) in eng["load"]      # loop through every load object
+        ld = ld_any::Dict{String,Any}
+
+        # Choose the active P key (pd preferred, otherwise pd_nom)
+        pkey = haskey(ld, "pd") ? "pd" : (haskey(ld, "pd_nom") ? "pd_nom" : nothing)
+        pkey === nothing && continue
+
+        # Write matching Q key
+        qkey = (pkey == "pd") ? "qd" : "qd_nom"
+
+        P = ld[pkey]
+        if P isa Number    # scalar active power
+            ld[qkey] = abs(Float64(P)) * q_factor   # set reactive power accordingly
+        elseif P isa AbstractVector
+            Pvec = Float64.(P)
+            ld[qkey] = abs.(Pvec) .* q_factor    # set reactive power vector accordingly
+        end
+    end
+
     return eng
 end
 
-function pf_metrics(pf::Dict{String,Any}; vmin_pu=0.90, vmax_pu=1.10)
-    sol_bus = pf["solution"]["bus"]
-    vmins = Float64[]
-    vmaxs = Float64[]
+function sum_loads_eng(eng::Dict{String,Any}) 
+    # sum up loads in kW and kVAR from eng dictionary
+    P = 0.0
+    Q = 0.0
 
-    for sb in values(sol_bus)
-        vm =
-            haskey(sb, "vm") ? sb["vm"][1:min(3, length(sb["vm"]))] :
-            (haskey(sb, "vr") && haskey(sb, "vi")) ? sqrt.(sb["vr"][1:min(3, length(sb["vr"]))].^2 .+ sb["vi"][1:min(3, length(sb["vi"]))].^2) :
-            nothing
-        vm === nothing && continue
-        push!(vmins, minimum(vm))
-        push!(vmaxs, maximum(vm))
+    for ld_any in values(get(eng, "load", Dict{String,Any}()))  # loop through each load
+        ld = ld_any::Dict{String,Any}
+
+        # prefer *_nom in eng
+        if haskey(ld, "pd_nom")
+            v = ld["pd_nom"]
+            P += v isa Number ? Float64(v) : sum(Float64.(v))   # sum up kW
+        elseif haskey(ld, "pd")
+            v = ld["pd"]
+            P += v isa Number ? Float64(v) : sum(Float64.(v))   # sum up kW
+        end
+
+        if haskey(ld, "qd_nom")
+            v = ld["qd_nom"]
+            Q += v isa Number ? Float64(v) : sum(Float64.(v))   # sum up kVAR
+        elseif haskey(ld, "qd")
+            v = ld["qd"]
+            Q += v isa Number ? Float64(v) : sum(Float64.(v))   # sum up kVAR
+        end
     end
 
-    if isempty(vmins)
-        return (status=string(pf["termination_status"]), vmin=NaN, vmax=NaN, n_under=0, n_over=0)
+    return (P_kW = P, Q_kvar = Q)
+end
+
+function pf_metrics(pf::Dict{String,Any}; vmin_pu=0.90, vmax_pu=1.10)
+    sol_bus = pf["solution"]["bus"]     # grab the solved bus results
+    vmins = Float64[]
+    vmaxs = Float64[]      # prepare to collect min/max voltages
+    
+    for sb in values(sol_bus)      # loop through each bus solution
+        vm =
+            haskey(sb, "vm") ? sb["vm"][1:min(3, length(sb["vm"]))] :   # try vm field first if it exists and use that
+            (haskey(sb, "vr") && haskey(sb, "vi")) ? sqrt.(sb["vr"][1:min(3, length(sb["vr"]))].^2 .+ sb["vi"][1:min(3, length(sb["vi"]))].^2) :   # otherwise compute from vr and vi
+            nothing    # if neither exists, skip this bus
+        vm === nothing && continue  # skip bus if no voltage info available
+        push!(vmins, minimum(vm))  
+        push!(vmaxs, maximum(vm))   # store this bus’s min/max across phases
+    end
+
+    if isempty(vmins)    # no voltage data found at all 
+        return (status=string(pf["termination_status"]), vmin=NaN, vmax=NaN, n_under=0, n_over=0)  # early exit
     end
 
     vmin_sys = minimum(vmins)
-    vmax_sys = maximum(vmaxs)
+    vmax_sys = maximum(vmaxs)    # system-wide min/max voltages
     n_under = count(x -> x < vmin_pu, vmins)
-    n_over  = count(x -> x > vmax_pu, vmaxs)
+    n_over  = count(x -> x > vmax_pu, vmaxs)    # count how many buses violate limits
 
-    return (status=string(pf["termination_status"]), vmin=vmin_sys, vmax=vmax_sys, n_under=n_under, n_over=n_over)
+    return (status=string(pf["termination_status"]), vmin=vmin_sys, vmax=vmax_sys, n_under=n_under, n_over=n_over)   # return metrics as a named tuple
 end
 
-function pv_shape_simple(time_vec::Vector{DateTime})
-    pv = zeros(Float64, length(time_vec))
-    for (i, ts) in enumerate(time_vec)
-        h = hour(ts) + minute(ts)/60
-        x = (h - 6.0)/12.0
-        pv[i] = (0.0 <= x <= 1.0) ? sin(pi*x)^2 : 0.0
+function pv_shape_simple(time_vec::Vector{DateTime})   # simple normalized PV shape over the day
+    pv = zeros(Float64, length(time_vec))              # prepare output vector
+    for (i, ts) in enumerate(time_vec)                 # loop through each timestamp
+        h = hour(ts) + minute(ts)/60                   # compute decimal hour
+        x = (h - 6.0)/12.0                             # map 6am-6pm to 0-1
+        pv[i] = (0.0 <= x <= 1.0) ? sin(pi*x)^2 : 0.0  # simple sin^2 shape between 6am and 6pm
     end
-    m = maximum(pv)
-    return m > 0 ? pv ./ m : pv
+    m = maximum(pv)                                    # normalize to peak of 1
+    return m > 0 ? pv ./ m : pv                        # return normalized PV shape
 end
 
 function add_pv_negative_load!(eng::Dict{String,Any}, pv_bus::String, pv_kw_per_phase::Float64, pv_phases::Vector{Int})
     haskey(eng, "load") || (eng["load"] = Dict{String,Any}())
     
-    # Prefer modifying an existing load at pv_bus
-    for (lid, ld_any) in eng["load"]
+    # modifying an existing load at pv_bus
+    for (lid, ld_any) in eng["load"]   
         ld = ld_any::Dict{String,Any}
         haskey(ld, "bus") || continue
-        string(ld["bus"]) == pv_bus || continue
+        string(ld["bus"]) == pv_bus || continue    # only consider loads at the PV bus and skip loads without a bus, or not on the PV bus
 
-        pd_key = haskey(ld, "pd") ? "pd" : (haskey(ld, "pd_nom") ? "pd_nom" : nothing)
-        pd_key === nothing && continue
+        pd_key = haskey(ld, "pd") ? "pd" : (haskey(ld, "pd_nom") ? "pd_nom" : nothing)   # find pd or pd_nom key
+        pd_key === nothing && continue    # skip loads without pd or pd_nom
 
-        pd_val = ld[pd_key]
+        pd_val = ld[pd_key]   # get the current pd value
 
         if pd_val isa Number
-            ld[pd_key] = Float64(pd_val) - pv_kw_per_phase * length(pv_phases)
+            ld[pd_key] = Float64(pd_val) - pv_kw_per_phase * length(pv_phases)    # subtract total PV from scalar load
             return ("modified_existing_load", string(lid))
         end
 
         if pd_val isa AbstractVector
-            pd_new = Float64.(pd_val)
-            for ph in pv_phases
+            pd_new = Float64.(pd_val)   # make a copy to modify
+            for ph in pv_phases    # subtract PV from specified phases
                 if 1 <= ph <= length(pd_new)
-                    pd_new[ph] -= pv_kw_per_phase
+                    pd_new[ph] -= pv_kw_per_phase   # subtract PV from this phase
                 end
             end
-            ld[pd_key] = pd_new
+            ld[pd_key] = pd_new   # update the load with modified vector
             return ("modified_existing_load", string(lid))
         end
     end
 
     # Fallback: create a new negative load
-    new_id = "pv_neg_load_$(pv_bus)"
+    new_id = "pv_neg_load_$(pv_bus)"    # unique load ID
     eng["load"][new_id] = Dict{String,Any}(
         "bus" => pv_bus,
         "connections" => pv_phases,
@@ -182,27 +239,41 @@ function add_pv_negative_load!(eng::Dict{String,Any}, pv_bus::String, pv_kw_per_
         "qd" => fill(0.0, length(pv_phases)),
         "model" => "constant_power",
         "status" => 1
-    )
+    )                                                    # add the new load to the dictionary
     return ("created_new_load", new_id)
+end
+
+function kw_to_w!(eng::Dict{String,Any})    # convert all kW/kVar load ratings to W/Var
+    haskey(eng, "load") || return eng      # early exit if no loads
+    for ld_any in values(eng["load"])      # loop through every load object
+        ld = ld_any::Dict{String,Any}      # treat each load as a dictionary
+
+        for k in ("pd_nom", "qd_nom", "pd", "qd")       # for each power-related key 
+            haskey(ld, k) || continue
+            v = ld[k]                                   # get the current value
+            ld[k] = v isa Number ? 1000.0 * Float64(v) : 1000.0 .* Float64.(v)     # convert numbers vs vectors correctly
+        end
+    end
+    return eng
 end
 
 # --------------------------------------------------
 # 2) Helpers: PV bus AUTO selection (distance-based)
 # --------------------------------------------------
 
-function make_lines_df_from_eng(eng::Dict{String,Any})
-    rows = NamedTuple[]
+function make_lines_df_from_eng(eng::Dict{String,Any})               #extract lines/branches into a DataFrame
+    rows = NamedTuple[]                                              
     if haskey(eng, "line")
-        for (_, ln_any) in eng["line"]
+        for (_, ln_any) in eng["line"]                               # loop through each line
             ln = ln_any::Dict{String,Any}
-            push!(rows, (Bus1=string(ln["f_bus"]), Bus2=string(ln["t_bus"]),
-                         length_km=(get(ln, "length", 0.0) / 1000.0)))
+            push!(rows, (Bus1=string(ln["f_bus"]), Bus2=string(ln["t_bus"]),    # extract from and to buses
+                         length_km=(get(ln, "length", 0.0) / 1000.0)))          # extract length in km (default 0.0 if missing)
         end
-    elseif haskey(eng, "branch")
-        for (_, br_any) in eng["branch"]
+    elseif haskey(eng, "branch")                          # fallback to branches if no lines
+        for (_, br_any) in eng["branch"]                  # loop through each branch
             br = br_any::Dict{String,Any}
-            push!(rows, (Bus1=string(br["f_bus"]), Bus2=string(br["t_bus"]),
-                         length_km=(get(br, "length", 0.0) / 1000.0)))
+            push!(rows, (Bus1=string(br["f_bus"]), Bus2=string(br["t_bus"]),          # extract from and to buses
+                         length_km=(get(br, "length", 0.0) / 1000.0)))                # extract length in km (default 0.0 if missing)
         end
     else
         error("No line or branch data found")
@@ -210,10 +281,10 @@ function make_lines_df_from_eng(eng::Dict{String,Any})
     return DataFrame(rows)
 end
 
-function pick_source_bus_name(eng::Dict{String,Any})
+function pick_source_bus_name(eng::Dict{String,Any})       # pick source bus name from common conventions
     if haskey(eng, "bus")
-        names = Set(string.(keys(eng["bus"])))
-        if "sourcebusz" in names
+        names = Set(string.(keys(eng["bus"])))             # collect all bus names
+        if "sourcebusz" in names                
             return "sourcebusz"
         elseif "sourcebus" in names
             return "sourcebus"
@@ -222,33 +293,33 @@ function pick_source_bus_name(eng::Dict{String,Any})
     return "sourcebus"
 end
 
-function compute_bus_distances(lines_df::DataFrame; source_bus::String)
-    adj = Dict{String, Vector{Tuple{String, Float64}}}()
+function compute_bus_distances(lines_df::DataFrame; source_bus::String)         # compute shortest-path distances from source bus though Breadth-First Search
+    adj = Dict{String, Vector{Tuple{String, Float64}}}()                        # adjacency list of the network which is undirected and shows connections between buses
     for r in eachrow(lines_df)
-        push!(get!(adj, r.Bus1, Tuple{String,Float64}[]), (r.Bus2, r.length_km))
-        push!(get!(adj, r.Bus2, Tuple{String,Float64}[]), (r.Bus1, r.length_km))
+        push!(get!(adj, r.Bus1, Tuple{String,Float64}[]), (r.Bus2, r.length_km))         
+        push!(get!(adj, r.Bus2, Tuple{String,Float64}[]), (r.Bus1, r.length_km))      # undirected graph
     end
 
-    dist = Dict{String,Float64}(source_bus => 0.0)
-    queue = [source_bus]
-    while !isempty(queue)
-        u = popfirst!(queue)
-        for (v, w) in get(adj, u, Tuple{String,Float64}[])
+    dist = Dict{String,Float64}(source_bus => 0.0)                 # distances from source bus
+    queue = [source_bus]                       # BFS queue
+    while !isempty(queue)                      # BFS loop
+        u = popfirst!(queue)                   # dequeue
+        for (v, w) in get(adj, u, Tuple{String,Float64}[])         # explore neighbors
             if !haskey(dist, v)
-                dist[v] = dist[u] + w
-                push!(queue, v)
+                dist[v] = dist[u] + w                              # update distance to neighbor
+                push!(queue, v)                                    # enqueue neighbor
             end
         end
     end
     return dist
 end
 
-function pick_pv_bus_auto(eng::Dict{String,Any}, dist::Dict{String,Float64})
-    bad = Set(["sourcebus", "sourcebusz", "SourceBus", "SourceBusZ"])
-    best_bus = ""; best_d = -Inf
+function pick_pv_bus_auto(eng::Dict{String,Any}, dist::Dict{String,Float64})       # pick PV bus automatically based on distance from source bus, avoiding common source bus names
+    bad = Set(["sourcebus", "sourcebusz", "SourceBus", "SourceBusZ"])              # bad bus names to avoid
+    best_bus = ""; best_d = -Inf                                                   # initialize best bus and distance
 
     for (b, d) in dist
-        if lowercase(b) in lowercase.(collect(bad))
+        if lowercase(b) in lowercase.(collect(bad))         
             continue
         end
         if d > best_d
@@ -257,90 +328,90 @@ function pick_pv_bus_auto(eng::Dict{String,Any}, dist::Dict{String,Float64})
         end
     end
 
-    best_bus != "" && return best_bus
+    best_bus != "" && return best_bus                    # return best bus if found
 
-    for b in keys(eng["bus"])
-        if lowercase(string(b)) in lowercase.(collect(bad))
+    for b in keys(eng["bus"])                            # fallback: first non-bad bus
+        if lowercase(string(b)) in lowercase.(collect(bad))           
             continue
         end
         return string(b)
     end
 
-    return first(keys(eng["bus"])) |> string
+    return first(keys(eng["bus"])) |> string              # last resort: first bus in the dictionary
 end
 
 # --------------------------------------------------
-# 3) Helpers: robust feeder-head current extraction (Fix A)
+# 3) Helpers: robust feeder-head current extraction and metrics
 # --------------------------------------------------
 
-function current_base_A(math::Dict{String,Any}; vbase_ln::Float64)
-    sbase = get(get(math, "settings", Dict{String,Any}()), "sbase_default", 1.0)
-    S = Float64(sbase)
+function current_base_A(math::Dict{String,Any}; vbase_ln::Float64)              # compute current base in amps from math dictionary and line-to-neutral voltage base
+    sbase = get(get(math, "settings", Dict{String,Any}()), "sbase_default", 1.0)    # default to 1.0 if missing
+    S = Float64(sbase)                                                              
     # sbase_default in PMD math is in VA (commonly), but can be W scaling-based.
     # The existing heuristic converts only when magnitudes look per-unit.
-    return S / (3.0 * vbase_ln)
+    return S / (3.0 * vbase_ln)                                            # Ibase = Sbase / (sqrt(3) * Vbase_LL) = Sbase / (3 * Vbase_LN)
 end
 
-function _phasor_from(br::Dict{String,Any}, rkey::String, ikey::String, idx::Int)
+function _phasor_from(br::Dict{String,Any}, rkey::String, ikey::String, idx::Int)    #extract a complex phasor from real/imag keys at given phase index
     (haskey(br, rkey) && haskey(br, ikey)) || return nothing
-    r = br[rkey]; im = br[ikey]
-    (r isa AbstractVector && im isa AbstractVector) || return nothing
-    (length(r) >= idx && length(im) >= idx) || return nothing
-    return complex(Float64(r[idx]), Float64(im[idx]))
+    r = br[rkey]; im = br[ikey]                               # get real and imaginary parts
+    (r isa AbstractVector && im isa AbstractVector) || return nothing     # ensure both are vectors
+    (length(r) >= idx && length(im) >= idx) || return nothing             # ensure index is valid
+    return complex(Float64(r[idx]), Float64(im[idx]))          # return complex phasor
 end
 
-function _seq_components(Aa::Complex, Ab::Complex, Ac::Complex)
-    a = cis(2pi / 3)
-    A0 = (Aa + Ab + Ac) / 3
-    A1 = (Aa + a * Ab + a^2 * Ac) / 3
-    A2 = (Aa + a^2 * Ab + a * Ac) / 3
+function _seq_components(Aa::Complex, Ab::Complex, Ac::Complex)         # compute sequence components from phase phasors
+    a = cis(2pi / 3)                                  # operator a = e^(j120°)
+    A0 = (Aa + Ab + Ac) / 3                    # zero-sequence
+    A1 = (Aa + a * Ab + a^2 * Ac) / 3          # positive-sequence
+    A2 = (Aa + a^2 * Ab + a * Ac) / 3          # negative-sequence
     return (A0=A0, A1=A1, A2=A2)
 end
 
-function _branch_current_phasors(br::Dict{String,Any})
+function _branch_current_phasors(br::Dict{String,Any})         # extract branch current phasors robustly from various possible key namings
     keypairs = [
         ("cr_fr", "ci_fr"),
         ("cfr",   "cfi"),
         ("cr",    "ci"),
         ("ctr",   "cti"),
-    ]
+    ]                                           # possible key name pairs for real and imaginary parts of current
     for (rk, ik) in keypairs
-        Ia = _phasor_from(br, rk, ik, 1)
-        Ib = _phasor_from(br, rk, ik, 2)
-        Ic = _phasor_from(br, rk, ik, 3)
-        In = _phasor_from(br, rk, ik, 4)
+        Ia = _phasor_from(br, rk, ik, 1)        # extract phase A current
+        Ib = _phasor_from(br, rk, ik, 2)        # extract phase B current
+        Ic = _phasor_from(br, rk, ik, 3)        # extract phase C current
+        In = _phasor_from(br, rk, ik, 4)        # extract neutral current (if present)
         if Ia !== nothing && Ib !== nothing && Ic !== nothing
-            return (Ia=Ia, Ib=Ib, Ic=Ic, In=In, rk=rk, ik=ik)
+            return (Ia=Ia, Ib=Ib, Ic=Ic, In=In, rk=rk, ik=ik)        # return phasors if successfully extracted
         end
     end
     return nothing
 end
 
-function _find_source_bus_id(math::Dict{String,Any}, source_bus_name::String)
+function _find_source_bus_id(math::Dict{String,Any}, source_bus_name::String)      # find source bus ID from its name
     haskey(math, "bus") || return nothing
-    for (bid, b_any) in math["bus"]
+    for (bid, b_any) in math["bus"]                # loop through all buses
         b = b_any::Dict{String,Any}
-        if haskey(b, "name") && string(b["name"]) == source_bus_name
+        if haskey(b, "name") && string(b["name"]) == source_bus_name       # match by name
             return bid
         end
     end
     return nothing
 end
 
-function _pick_head_branch_id(pf::Dict{String,Any}, math::Dict{String,Any}, source_bus_name::String)
+function _pick_head_branch_id(pf::Dict{String,Any}, math::Dict{String,Any}, source_bus_name::String)   # pick the feeder head branch ID based on priorities
     sol = pf["solution"]
     haskey(sol, "branch") || return nothing
     isempty(sol["branch"]) && return nothing
 
     # Priority 1: the explicit source impedance line if present
     if haskey(math, "branch")
-        for (br_id, br_any) in math["branch"]
+        for (br_id, br_any) in math["branch"]           # loop through all branches
             brm = br_any::Dict{String,Any}
-            sid = get(brm, "source_id", "")
-            if occursin("line.sourceZ", string(sid)) || occursin("sourceZ", lowercase(string(sid)))
-                if haskey(sol["branch"], br_id)
+            sid = get(brm, "source_id", "")             # get source_id field if it exists
+            if occursin("line.sourceZ", string(sid)) || occursin("sourceZ", lowercase(string(sid)))         # check for sourceZ indication
+                if haskey(sol["branch"], br_id)         # check if this branch is in the solution
                     return br_id
-                elseif haskey(sol["branch"], string(br_id))
+                elseif haskey(sol["branch"], string(br_id))   # check string version
                     return string(br_id)
                 end
             end
@@ -348,26 +419,26 @@ function _pick_head_branch_id(pf::Dict{String,Any}, math::Dict{String,Any}, sour
     end
 
     # Priority 2: branch connected to the source bus with largest 3-phase current magnitude
-    src_id = _find_source_bus_id(math, source_bus_name)
-    best = nothing
+    src_id = _find_source_bus_id(math, source_bus_name)       # find source bus ID
+    best = nothing   
     best_mag = -Inf
 
     if src_id !== nothing && haskey(math, "branch")
         for (br_id, br_any) in math["branch"]
             brm = br_any::Dict{String,Any}
-            connected = (brm["f_bus"] == src_id || brm["t_bus"] == src_id)
+            connected = (brm["f_bus"] == src_id || brm["t_bus"] == src_id)     # check if branch is connected to source bus
             connected || continue
 
-            sol_id = haskey(sol["branch"], br_id) ? br_id : (haskey(sol["branch"], string(br_id)) ? string(br_id) : nothing)
+            sol_id = haskey(sol["branch"], br_id) ? br_id : (haskey(sol["branch"], string(br_id)) ? string(br_id) : nothing)   # find corresponding solution branch ID
             sol_id === nothing && continue
 
-            brs = sol["branch"][sol_id]
-            ph = _branch_current_phasors(brs)
-            ph === nothing && continue
+            brs = sol["branch"][sol_id]         # get branch solution
+            ph = _branch_current_phasors(brs)   # extract current phasors
+            ph === nothing && continue          # skip if unable to extract currents
 
-            mag = maximum([abs(ph.Ia), abs(ph.Ib), abs(ph.Ic)])
-            if mag > best_mag
-                best_mag = mag
+            mag = maximum([abs(ph.Ia), abs(ph.Ib), abs(ph.Ic)])    # compute largest phase current magnitude
+            if mag > best_mag                  # update best if larger
+                best_mag = mag  
                 best = sol_id
             end
         end
@@ -375,12 +446,12 @@ function _pick_head_branch_id(pf::Dict{String,Any}, math::Dict{String,Any}, sour
     end
 
     # Priority 3: any branch with largest 3-phase current magnitude
-    for (br_id, brs_any) in sol["branch"]
+    for (br_id, brs_any) in sol["branch"]         # loop through all branches in solution
         brs = brs_any::Dict{String,Any}
-        ph = _branch_current_phasors(brs)
-        ph === nothing && continue
-        mag = maximum([abs(ph.Ia), abs(ph.Ib), abs(ph.Ic)])
-        if mag > best_mag
+        ph = _branch_current_phasors(brs)         # extract current phasors
+        ph === nothing && continue                # skip if unable to extract currents
+        mag = maximum([abs(ph.Ia), abs(ph.Ib), abs(ph.Ic)])    # compute largest phase current magnitude
+        if mag > best_mag               # update best if larger
             best_mag = mag
             best = br_id
         end
@@ -389,43 +460,71 @@ function _pick_head_branch_id(pf::Dict{String,Any}, math::Dict{String,Any}, sour
     return best === nothing ? first(keys(sol["branch"])) : best
 end
 
-function feeder_head_current_metrics(pf::Dict{String,Any}, math::Dict{String,Any}, source_bus_name::String; vbase_ln::Float64=230.0)
+function feeder_head_current_metrics(pf::Dict{String,Any}, math::Dict{String,Any}, source_bus_name::String; vbase_ln::Float64=230.0)    # extract feeder head current metrics robustly
     sol = pf["solution"]
     if !haskey(sol, "branch") || isempty(sol["branch"])
-        return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)
+        return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)   # early exit if no branch solution
     end
 
     bid = _pick_head_branch_id(pf, math, source_bus_name)
-    bid === nothing && return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)
+    bid === nothing && return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)  # early exit if unable to pick branch ID
 
     br = sol["branch"][bid]
-    ph = _branch_current_phasors(br)
-    ph === nothing && return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)
+    ph = _branch_current_phasors(br)   # extract current phasors
+    ph === nothing && return (Ia=NaN, Ib=NaN, Ic=NaN, In=NaN, Imean=NaN, Imax=NaN, I0=NaN, I2=NaN, I2_over_I1=NaN)   # early exit if unable to extract currents
 
-    Ia, Ib, Ic, In = ph.Ia, ph.Ib, ph.Ic, ph.In
-    ma, mb, mc = abs(Ia), abs(Ib), abs(Ic)
-    mn = (In === nothing) ? NaN : abs(In)
+    Ia, Ib, Ic, In = ph.Ia, ph.Ib, ph.Ic, ph.In   # get phasors
+    ma, mb, mc = abs(Ia), abs(Ib), abs(Ic)   # magnitudes
+    mn = (In === nothing) ? NaN : abs(In)    # neutral magnitude if present
 
     # Per-unit to amps conversion heuristic
     if maximum([ma, mb, mc]) < 10.0
-        IbaseA = current_base_A(math; vbase_ln=vbase_ln)
-        Ia *= IbaseA; Ib *= IbaseA; Ic *= IbaseA
-        ma *= IbaseA; mb *= IbaseA; mc *= IbaseA
-        if isfinite(mn)
+        IbaseA = current_base_A(math; vbase_ln=vbase_ln)   # compute current base in amps
+        Ia *= IbaseA; Ib *= IbaseA; Ic *= IbaseA           # scale phasors to amps
+        ma *= IbaseA; mb *= IbaseA; mc *= IbaseA           # scale magnitudes to amps
+        if isfinite(mn)     # scale neutral if present
             mn *= IbaseA
         end
-        if In !== nothing
+        if In !== nothing   # scale neutral phasor if present
             In *= IbaseA
         end
     end
 
-    seq = _seq_components(Ia, Ib, Ic)
-    I0 = abs(seq.A0)
-    I1 = abs(seq.A1)
-    I2 = abs(seq.A2)
-    r  = I1 > 1e-12 ? I2 / I1 : NaN
+    seq = _seq_components(Ia, Ib, Ic)     # compute sequence components
+    I0 = abs(seq.A0)                      # zero-sequence magnitude
+    I1 = abs(seq.A1)                      # positive-sequence magnitude
+    I2 = abs(seq.A2)                      # negative-sequence magnitude
+    r  = I1 > 1e-12 ? I2 / I1 : NaN       # negative-to-positive sequence ratio
 
-    return (Ia=ma, Ib=mb, Ic=mc, In=mn, Imean=(ma+mb+mc)/3, Imax=max(ma,mb,mc), I0=I0, I2=I2, I2_over_I1=r)
+    return (Ia=ma, Ib=mb, Ic=mc, In=mn, Imean=(ma+mb+mc)/3, Imax=max(ma,mb,mc), I0=I0, I2=I2, I2_over_I1=r)    # return metrics as named tuple
+end
+
+function sum_loads_math_pu(math::Dict{String,Any})   # sum up loads in per-unit from math dictionary
+    Ppu = 0.0; Qpu = 0.0    # initialize sums
+    for ld_any in values(get(math, "load", Dict{String,Any}()))    # loop through each load
+        ld = ld_any::Dict{String,Any}
+
+        if haskey(ld, "pd")
+            v = ld["pd"]
+            Ppu += v isa Number ? Float64(v) : sum(Float64.(v))     # sum up per-unit active power
+        end
+        if haskey(ld, "qd")
+            v = ld["qd"]
+            Qpu += v isa Number ? Float64(v) : sum(Float64.(v))     # sum up per-unit reactive power
+        end
+    end
+    return (P_pu=Ppu, Q_pu=Qpu)     # return sums as named tuple
+end
+
+function sbase_math(math::Dict{String,Any})   # extract sbase from math dictionary
+    # common places sbase appears
+    if haskey(math, "settings") && haskey(math["settings"], "sbase_default")
+        return Float64(math["settings"]["sbase_default"])    # return sbase_default if present
+    end
+    if haskey(math, "baseMVA")
+        return Float64(math["baseMVA"])     # return baseMVA if present
+    end
+    return NaN
 end
 
 # --------------------------------------------------
@@ -581,48 +680,48 @@ end
 ## --------------------------------------------------
 # 6) Load baseline CSV and select PV-stress timesteps
 # --------------------------------------------------
+    
+isfile(BASELINE_CSV) || error("Baseline CSV not found: $(BASELINE_CSV)")   # check file existence of baseline CSV which contains alpha_t and pf_status
 
-isfile(BASELINE_CSV) || error("Baseline CSV not found: $(BASELINE_CSV)")
-
-df0 = CSV.read(BASELINE_CSV, DataFrame)
-df0 = df0[df0.pf_status .== "LOCALLY_SOLVED", :]
+df0 = CSV.read(BASELINE_CSV, DataFrame)           # load baseline CSV
+df0 = df0[df0.pf_status .== "LOCALLY_SOLVED", :]  # keep only locally solved cases
 
 # PV proxy computed here (answers the pv_pu_proxy question)
-df0.pv_pu = pv_shape_simple(df0.time)
-df0.score = df0.pv_pu ./ (df0.alpha_t .+ 1e-6)
+df0.pv_pu = pv_shape_simple(df0.time)               # compute simple PV shape proxy to get pv_pu_proxy
+df0.score = df0.pv_pu ./ (df0.alpha_t .+ 1e-6)      # score = pv_pu_proxy / alpha_t which favors high PV and low load
 
-df_sel = sort(df0, :score, rev=true)
-df_sel = unique(df_sel, :timestep)
-df_sel = df_sel[1:min(N_PV_STRESS, nrow(df_sel)), :]
-df_sel = sort(df_sel, :time)
+df_sel = sort(df0, :score, rev=true)                # sort by score descending
+df_sel = unique(df_sel, :timestep)                  # keep only unique timesteps
+df_sel = df_sel[1:min(N_PV_STRESS, nrow(df_sel)), :]  # keep only top N_PV_STRESS timesteps
+df_sel = sort(df_sel, :time)                        # sort back by time
 
-if SKIP_NIGHT_PV
+if SKIP_NIGHT_PV                                    # filter out nighttime PV cases if specified
     df_sel = df_sel[df_sel.pv_pu .> 1e-8, :]
 end
 
-nrow(df_sel) == 0 && error("No PV-stress timesteps selected after filters")
+nrow(df_sel) == 0 && error("No PV-stress timesteps selected after filters")   # error if no timesteps left
 
-df_sel.pv_kw_eff = PV_KW_PER_PHASE .* df_sel.pv_pu
+df_sel.pv_kw_eff = PV_KW_PER_PHASE .* df_sel.pv_pu         # compute effective PV kW per phase
 
-println("\nSelected PV-stress timesteps: ", nrow(df_sel))
+println("\nSelected PV-stress timesteps: ", nrow(df_sel))    
 
 # Choose center timestep for 48h window
-center_row = WINDOW_CENTER == "FIRST_STRESS" ? df_sel[1, :] : df_sel[argmax(df_sel.score), :]
-center_k   = Int(center_row.timestep)
+center_row = WINDOW_CENTER == "FIRST_STRESS" ? df_sel[1, :] : df_sel[argmax(df_sel.score), :]     # pick first stress or highest-score stress
+center_k   = Int(center_row.timestep)            # get center timestep for 48h window
 
 # Build 48h window from baseline CSV time axis
-k_list = collect(df0.timestep)
-center_idx = findfirst(==(center_k), k_list)
-center_idx === nothing && error("Center timestep not found in baseline CSV")
+k_list = collect(df0.timestep)                 # list of all timesteps in baseline CSV
+center_idx = findfirst(==(center_k), k_list)            # find index of center timestep
+center_idx === nothing && error("Center timestep not found in baseline CSV")          # error if not found
 
-half = Int(floor(WINDOW_STEPS ÷ 2))
-i1 = max(1, center_idx - half)
-i2 = min(nrow(df0), i1 + WINDOW_STEPS - 1)
-df_win = df0[i1:i2, :]
-df_win.pv_pu = pv_shape_simple(df_win.time)
-df_win.pv_kw_eff = PV_KW_PER_PHASE .* df_win.pv_pu
+half = Int(floor(WINDOW_STEPS ÷ 2))             # half window size
+i1 = max(1, center_idx - half)                  # start index of window
+i2 = min(nrow(df0), i1 + WINDOW_STEPS - 1)      # end index of window
+df_win = df0[i1:i2, :]                          # extract 48h window
+df_win.pv_pu = pv_shape_simple(df_win.time)     # compute simple PV shape proxy for window
+df_win.pv_kw_eff = PV_KW_PER_PHASE .* df_win.pv_pu    # compute effective PV kW per phase for window
 
-println("48h window rows: ", nrow(df_win), " | center timestep = ", center_k)
+println("48h window rows: ", nrow(df_win), " | center timestep = ", center_k)    
 
 # Save input plots for stress selection
 plot_inputs(df_sel, joinpath(FIGDIR, "inputs_alpha_pvproxy_pveff_selected.png"))
@@ -632,55 +731,107 @@ plot_inputs(df_sel, joinpath(FIGDIR, "inputs_alpha_pvproxy_pveff_selected.png"))
 # --------------------------------------------------
 
 println("\nParsing BASELINE feeder: ", MASTER_BASELINE)
-eng_base0 = PMD.parse_file(MASTER_BASELINE, transformations=[PMD.transform_loops!, reduce_lines!])
-scale_loads!(eng_base0, LOAD_ALPHA_BASE)
+eng_base0 = PMD.parse_file(MASTER_BASELINE, transformations=[PMD.transform_loops!, reduce_lines!])   # parse baseline feeder file and reduce lines
+
+@show haskey(eng_base0, "load")
+@show length(get(eng_base0, "load", Dict()))
+
+function sum_eng_PQ(eng)
+    P = 0.0; Q = 0.0
+    for ld in values(get(eng, "load", Dict()))
+        p = get(ld, "pd_nom", get(ld, "pd", 0.0))
+        q = get(ld, "qd_nom", get(ld, "qd", 0.0))
+        P += p isa Number ? Float64(p) : sum(Float64.(p))
+        Q += q isa Number ? Float64(q) : sum(Float64.(q))
+    end
+    return (P=P, Q=Q)
+end
+
+@show sum_eng_PQ(eng_base0)
+
+@show sum_loads_eng(eng_base0)  # show total loads before scaling
+
+@show haskey(eng_base0, "voltage_source")
+@show keys(get(eng_base0, "voltage_source", Dict()))
+
+# eng_base0["voltage_source"]["source"]["rs"] .= 0
+# eng_base0["voltage_source"]["source"]["xs"] .= 0
+
+eng_base_template = deepcopy(eng_base0)    # template to use for each timestep
+scale_loads!(eng_base_template, LOAD_ALPHA_BASE)     # scale loads by base alpha
+add_load_q_from_pf!(eng_base_template; pf=0.95)      # add some Q load based on power factor
+
+@show sum_loads_eng(eng_base_template) # should now show P ~ 74*1.5 and Q > 0
+
+# kw_to_w!(eng_base_template)   # convert kW loads to W for better numerical conditioning
+
+# math_pf0 = PMD.transform_data_model(eng_base_template; kron_reduce=true, phase_project=true)
+# # PMD.add_start_vrvi!(math_pf0)
+# pf0 = PMD.solve_mc_pf(math_pf0, PMD.IVRUPowerModel, ipopt)
+# @show pf0["termination_status"]
+# @show pf_metrics(pf0)
+
+math_base0 = PMD.transform_data_model(eng_base_template; kron_reduce=false, phase_project=false)    # transform to math model without reduction
+length(math_base0["load"]) == 0 && error("No loads found in baseline feeder")                       # check loads exist
+
+@show haskey(math_base0, "load")
+@show length(get(math_base0, "load", Dict()))
+
+ld = first(values(math_base0["load"]))
+@show keys(ld)
+@show get(ld, "pd", nothing)
+@show get(ld, "qd", nothing)
+
+function sum_math_PQ(math)
+    P = 0.0; Q = 0.0
+    for ld in values(get(math, "load", Dict()))
+        p = get(ld, "pd", 0.0)
+        q = get(ld, "qd", 0.0)
+        P += p isa Number ? Float64(p) : sum(Float64.(p))
+        Q += q isa Number ? Float64(q) : sum(Float64.(q))
+    end
+    return (P=P, Q=Q)
+end
+
+@show sum_math_PQ(math_base0)
+@show math_base0["settings"]["sbase_default"]
+
+for (_, bus_any) in math_base0["bus"]     # set voltage limits on all buses
+    bus = bus_any::Dict{String,Any}
+    bus["vmin"] .= 0.94
+    bus["vmax"] .= 1.10
+end
+
+S = sbase_math(math_base0)                     # extract sbase from math model
+pq = sum_loads_math_pu(math_base0)             # sum loads in per-unit from math model
+@show S pq                                     # show sbase and per-unit loads 
+@show (P_kW_est = pq.P_pu * S, Q_kvar_est = pq.Q_pu * S)  # estimated loads in kW and kVAR from math model
+
+@show haskey(math_base0, "voltage_source")
+@show keys(get(math_base0, "voltage_source", Dict()))
+
+pf_builtin = PMD.solve_mc_pf(math_base0, PMD.IVRUPowerModel, ipopt)
+@show pf_builtin["termination_status"]
+@show pf_metrics(pf_builtin)
+
+# unique(length.(get.(values(math_base0["bus"]), "vmin", [])))
+# unique(length.(get.(values(math_base0["bus"]), "vmax", [])))
 
 lines_df   = make_lines_df_from_eng(eng_base0)
 source_bus = pick_source_bus_name(eng_base0)
 dist       = compute_bus_distances(lines_df; source_bus=source_bus)
 
-pv_bus = (PV_BUS == "AUTO") ? pick_pv_bus_auto(eng_base0, dist) : PV_BUS
-println("Distance reference bus: ", source_bus)
+pv_bus = (PV_BUS == "AUTO") ? pick_pv_bus_auto(eng_base0, dist) : PV_BUS   # pick PV bus automatically or use specified one
+println("Distance reference bus: ", source_bus)   
 println("Chosen PV bus: ", pv_bus)
 
 println("\nParsing STATCOM feeder: ", MASTER_STATCOM)
-eng_stc0 = PMD.parse_file(MASTER_STATCOM, transformations=[PMD.transform_loops!, reduce_lines!])
-scale_loads!(eng_stc0, LOAD_ALPHA_BASE)
+eng_stc0 = PMD.parse_file(MASTER_STATCOM, transformations=[PMD.transform_loops!, reduce_lines!])     # parse statcom feeder file and reduce lines
+scale_loads!(eng_stc0, LOAD_ALPHA_BASE)     # scale loads by base alpha to match baseline and avoid unbalanced comparisons
+eng_stc0["load"]    
 
 # --------------------------------------------------
-# 8) Scenario solver wrappers
-# --------------------------------------------------
-
-function solve_pf_case(eng::Dict{String,Any}, ipopt)
-    math = PMD.transform_data_model(eng; kron_reduce=false, phase_project=false)
-    PMD.add_start_vrvi!(math)
-    pf = PMD.solve_mc_opf(math, PMD.IVRENPowerModel, ipopt)
-    return pf, math
-end
-
-function solve_statcom_case(eng::Dict{String,Any}, ipopt)
-    math = PMD.transform_data_model(eng; kron_reduce=false, phase_project=false)
-
-    # Inverter gen ids expected in master_scaled.dss
-    stc_ids = [string(i) for i in 1:10]
-    for gen_id in stc_ids
-        add_inverter_losses!(math, gen_id; three_wire=false, c_rating_a=30*ones(3))
-    end
-
-    # Voltage unbalance constraint field used by the OPF builder
-    for (_, bus_any) in math["bus"]
-        bus = bus_any::Dict{String,Any}
-        bus["vm_vuf_max"] = 0.02
-    end
-
-    PMD.add_start_vrvi!(math)
-    model = PMD.instantiate_mc_model(math, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
-    pf = PMD.optimize_model!(model, optimizer=ipopt)
-    return pf, math
-end
-
-# --------------------------------------------------
-# 9) Main loop on PV-stress timesteps (tables + voltage sequences)
+# 8) Main loop on PV-stress timesteps (tables + voltage sequences)
 # --------------------------------------------------
 
 rows = NamedTuple[]
@@ -690,37 +841,73 @@ seq_rows = NamedTuple[]
     rank=1
     r = df_sel[1, :]
     k = Int(r.timestep)
-    a = Float64(r.alpha_t)
-    pv_pu = Float64(r.pv_pu)
-    pv_kw_eff = PV_KW_PER_PHASE * pv_pu
+    a = Float64(r.alpha_t)      # load scaling factor
+    pv_pu = Float64(r.pv_pu)    # effective per-phase PV kW injection
+    pv_kw_eff = PV_KW_PER_PHASE * pv_pu    # effective PV kW per phase
 
     # Baseline
-    eng_base = deepcopy(eng_base0)
-    scale_loads!(eng_base, a)
+    eng_base = deepcopy(eng_base_template)
+    scale_loads!(eng_base, a)                     # scale loads by alpha_t
+
+    total_kw = sum(sum(ld["pd_nom"]) for ld in values(eng_base["load"]))
+    total_kw
+
+    ld = first(values(eng_base["load"]))
+    @show keys(ld)
+    @show get(ld, "pd_nom", nothing)
+    @show get(ld, "pd", nothing)
+    @show get(ld, "qd_nom", nothing)
+    @show get(ld, "qd", nothing)
+
+    # kw_to_w!(eng_base)  # convert kW loads to W for better numerical conditioning
+
     math_base = PMD.transform_data_model(eng_base; kron_reduce=false, phase_project=false)
+    
     for (_, bus) in math_base["bus"]
-        bus["vmin"] .= 0.9
+        bus["vmin"] .= 0.94
         bus["vmax"] .= 1.1
     end
-    PMD.add_start_vrvi!(math_base)
+
+    total_pu = total_kw * 1000 / math_base["settings"]["sbase_default"]
+    total_pu
+    
+    pq = sum_loads_math_pu(math_base)
+    pq.P_pu 
+
+    @show pq
+    @show (P_seen_kW = pq.P_pu * math_base["settings"]["sbase_default"] / 1000)
+
+    PMD.add_start_vrvi!(math_base)      # telling the solver where “normal” is before asking it to find the truth
     # pf_base = PMD.solve_mc_opf(math_base, PMD.IVRENPowerModel, ipopt)
-    model = PMD.instantiate_mc_model(math_base, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
+    model = PMD.instantiate_mc_model(math_base, PMD.IVRENPowerModel, build_mc_pf_mx_Rhea)
     pf_base = PMD.optimize_model!(model, optimizer=ipopt)
     # pf_base, math_base = solve_pf_case(eng_base, ipopt)
     m_base = pf_metrics(pf_base; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
 
+    pf_base["solution"]["bus"] |> length
+    pf_base["objective"]
+    pf_base["solution"]["bus"]["1"]  # or any key that exists
+
+    math_base["settings"]["sbase_default"]
+
+    @show pf_base["termination_status"]
+    @show sum_loads_eng(eng_base)
+    @show feeder_head_current_metrics(pf_base, math_base, source_bus; vbase_ln=VBASE_LN)
+
+
     # PV only
-    eng_pv = deepcopy(eng_base0)
+    eng_pv = deepcopy(eng_base_template)
     scale_loads!(eng_pv, a)
+    # kw_to_w!(eng_pv) # convert kW loads to W for better numerical conditioning
     pv_action, pv_load_id = add_pv_negative_load!(eng_pv, pv_bus, pv_kw_eff, PV_PHASES)
     math_pv = PMD.transform_data_model(eng_pv; kron_reduce=false, phase_project=false)
     for (_, bus) in math_pv["bus"]
-        bus["vmin"] .= 0.9
+        bus["vmin"] .= 0.94
         bus["vmax"] .= 1.1
     end
     PMD.add_start_vrvi!(math_pv)
     # pf_pv = PMD.solve_mc_opf(math_pv, PMD.IVRENPowerModel, ipopt)
-    model = PMD.instantiate_mc_model(math_pv, PMD.IVRENPowerModel, build_mc_opf_mx_Rhea)
+    model = PMD.instantiate_mc_model(math_pv, PMD.IVRENPowerModel, build_mc_pf_mx_Rhea)
     pf_pv = PMD.optimize_model!(model, optimizer=ipopt)
     # pf_pv, math_pv = solve_pf_case(eng_pv, ipopt)
     m_pv = pf_metrics(pf_pv; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
