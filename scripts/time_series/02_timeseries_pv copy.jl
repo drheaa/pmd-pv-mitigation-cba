@@ -230,16 +230,16 @@ function add_pv_negative_load!(eng::Dict{String,Any}, pv_bus::String, pv_kw_per_
     end
 
     # Fallback: create a new negative load
+    load_dict_template = eng["load"][first(keys(eng["load"]))]::Dict{String,Any}   # get a template load dictionary
     new_id = "pv_neg_load_$(pv_bus)"    # unique load ID
-    eng["load"][new_id] = Dict{String,Any}(
-        "bus" => pv_bus,
-        "connections" => pv_phases,
-        "phases" => length(pv_phases),
-        "pd" => fill(-pv_kw_per_phase, length(pv_phases)),
-        "qd" => fill(0.0, length(pv_phases)),
-        "model" => "constant_power",
-        "status" => 1
-    )                                                    # add the new load to the dictionary
+    eng["load"][new_id] = load_dict_template
+    eng["load"][new_id]["bus"] = pv_bus
+    eng["load"][new_id]["connections"] = pv_phases
+    eng["load"][new_id]["phases"] = length(pv_phases)
+    eng["load"][new_id]["pd"] = fill(-pv_kw_per_phase, length(pv_phases))
+    eng["load"][new_id]["qd"] = fill(0.0, length(pv_phases))
+    
+    @show eng["load"][new_id]
     return ("created_new_load", new_id)
 end
 
@@ -737,6 +737,157 @@ eng_base0 = PMD.parse_file(MASTER_BASELINE, transformations=[PMD.transform_loops
 @show length(get(eng_base0, "load", Dict()))
 
 
+
+
+
+########################################################################
+########################################################################
+## ######################################################################
+MASTER_BASELINE = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET_4W, "master_baseline_4w_new.dss")
+# MASTER_BASELINE = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", NET_4W, "master_baseline_4w.dss")
+MASTER_BASELINE_3w = joinpath(ROOT, "data/raw/dsuite_networks_scaled_v1.1", "spd_s", "master_scaled_new.dss")
+
+rank=1
+r = df_sel[1, :]
+k = Int(r.timestep)
+a = Float64(r.alpha_t)      # load scaling factor
+pv_pu = Float64(r.pv_pu)    # effective per-phase PV kW injection
+pv_kw_eff = PV_KW_PER_PHASE * pv_pu    # effective PV kW per phase
+
+load_multiplier = 50
+
+eng_base = PMD.parse_file(MASTER_BASELINE_3w, transformations=[PMD.transform_loops!, reduce_lines!])   # parse baseline feeder file and reduce lines
+scale_loads!(eng_base, a)
+math_base = PMD.transform_data_model(eng_base; kron_reduce=true, phase_project=true)
+for (i, bus) in math_base["bus"]
+    bus["vmin"][1:3] .= 0.9
+    bus["vmax"][1:3] .= 1.1
+end
+for (i, load) in math_base["load"]
+    load["pd"] *= load_multiplier
+end
+pf_base = PMD.solve_mc_pf(math_base, PMD.IVRUPowerModel, ipopt)
+m_base = pf_metrics(pf_base; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
+
+
+# PV only
+eng_pv = PMD.parse_file(MASTER_BASELINE_3w, transformations=[PMD.transform_loops!, reduce_lines!])   # parse baseline feeder file and reduce lines
+scale_loads!(eng_pv, a)
+pv_bus = first(keys(eng_pv["load"])) |> string    # pick first bus as PV bus
+eng_pv["load"][pv_bus]["pd_nom"] .-= pv_kw_eff
+math_pv = PMD.transform_data_model(eng_pv; kron_reduce=true, phase_project=true)
+for (_, bus) in math_pv["bus"]
+    bus["vmin"][1:3] .= 0.9
+    bus["vmax"][1:3] .= 1.1
+end
+for (i, load) in math_pv["load"]
+    load["pd"] *= load_multiplier
+end
+pf_pv = PMD.solve_mc_pf(math_pv, PMD.IVRUPowerModel, ipopt)
+m_pv = pf_metrics(pf_pv; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
+
+
+
+include(joinpath(ROOT, "src/read_functions.jl"))
+
+# PV + STATCOM
+eng_stc = PMD.parse_file(MASTER_BASELINE_3w, transformations=[PMD.transform_loops!, reduce_lines!])   # parse baseline feeder file and reduce lines
+scale_loads!(eng_stc, a)
+pv_bus = first(keys(eng_stc["load"])) |> string    # pick first bus as PV bus
+eng_stc["load"][pv_bus]["pd_nom"] .-= pv_kw_eff
+math_stc = PMD.transform_data_model(eng_stc; kron_reduce=true, phase_project=true)
+for (i, bus) in math_stc["bus"]
+    bus["vmin"][1:3] .= 0.9
+    bus["vmax"][1:3] .= 1.1
+end
+for (i, load) in math_stc["load"]
+    load["pd"] *= load_multiplier
+end
+# Inverter gen ids expected in master_scaled.dss
+stc_ids = [string(i) for i in 1:10]
+for gen_id in stc_ids
+    add_inverter_losses!(math_stc, gen_id; three_wire=true, c_rating_a=30*ones(3))
+end
+# Voltage unbalance constraint field used by the OPF builder
+for (_, bus_any) in math_stc["bus"]
+    bus = bus_any::Dict{String,Any}
+    bus["vm_vuf_max"] = 0.02
+end
+PMD.add_start_vrvi!(math_stc)
+model = PMD.instantiate_mc_model(math_stc, PMD.IVRUPowerModel, build_mc_opf_mx_3w_Rhea);
+pf_stc = PMD.optimize_model!(model, optimizer=ipopt)
+m_stc = pf_metrics(pf_stc; vmin_pu=VMIN_PU, vmax_pu=VMAX_PU)
+
+
+ref_branch_id = 176
+ref_branch_current_magnitude_base = abs.(pf_base["solution"]["branch"]["$ref_branch_id"]["cr_fr"] .+ im .* pf_base["solution"]["branch"]["$ref_branch_id"]["ci_fr"])
+ref_branch_current_magnitude_pv = abs.(pf_pv["solution"]["branch"]["$ref_branch_id"]["cr_fr"] .+ im .* pf_pv["solution"]["branch"]["$ref_branch_id"]["ci_fr"])
+ref_branch_current_magnitude_stc = abs.(pf_stc["solution"]["branch"]["$ref_branch_id"]["cr_fr"] .+ im .* pf_stc["solution"]["branch"]["$ref_branch_id"]["ci_fr"])
+
+v_neg_base = []
+v_zero_base = []
+v_neg_pv = []
+v_zero_pv = []
+v_neg_stc = []
+v_zero_stc = []
+
+function vm_va_to_rectangular(vm::AbstractVector, va::AbstractVector)
+    vr = vm .* cos.(va)
+    vi = vm .* sin.(va)
+    return (vr=vr, vi=vi)
+end
+
+for (i, bus) in pf_base["solution"]["bus"]
+    # base results
+    if haskey(bus, "vm")
+        vr, vi = vm_va_to_rectangular(bus["vm"], bus["va"])
+    else
+        vr, vi = bus["vr"], bus["vi"]
+    end
+    _, _, v_seq_m = get_sequence_components(vr[1:3] + im .* vi[1:3])
+    push!(v_neg_base, v_seq_m[3])
+    push!(v_zero_base, v_seq_m[1])
+
+    # pv results
+    bus_res_pv = pf_pv["solution"]["bus"][i]
+    if haskey(bus_res_pv, "vm")
+        vr, vi = vm_va_to_rectangular(bus_res_pv["vm"], bus_res_pv["va"])
+    else
+        vr, vi = bus_res_pv["vr"], bus_res_pv["vi"]
+    end
+    _, _, v_seq_m = get_sequence_components(vr[1:3] + im .* vi[1:3])
+    push!(v_neg_pv, v_seq_m[3])
+    push!(v_zero_pv, v_seq_m[1])
+
+    # statcom results
+    bus_res_stc = pf_stc["solution"]["bus"][i]
+    if haskey(bus_res_stc, "vm")
+        vr, vi = vm_va_to_rectangular(bus_res_stc["vm"], bus_res_stc["va"])
+    else
+        vr, vi = bus_res_stc["vr"], bus_res_stc["vi"]
+    end
+    _, _, v_seq_m = get_sequence_components(vr[1:3] + im .* vi[1:3])
+    push!(v_neg_stc, v_seq_m[3])
+    push!(v_zero_stc, v_seq_m[1])
+end
+
+v_zero_plot = plot(v_zero_base; xlabel="bus index", label="base", title="Zero-sequence voltage magnitude", seriestype=:scatter)
+plot!(v_zero_pv; label="pv", seriestype=:scatter)
+plot!(v_zero_stc; label="stc", seriestype=:scatter)
+
+v_neg_plot = plot(v_neg_base; xlabel="bus index", label="base", title="Negative-sequence voltage magnitude", seriestype=:scatter)
+plot!(v_neg_pv; label="pv", seriestype=:scatter)
+plot!(v_neg_stc; label="stc", seriestype=:scatter)
+
+
+
+
+
+
+## ######################################################################
+########################################################################
+########################################################################
+
 function sum_eng_PQ(eng)
     P = 0.0; Q = 0.0
     for ld in values(get(eng, "load", Dict()))
@@ -932,7 +1083,7 @@ seq_rows = NamedTuple[]
     # Inverter gen ids expected in master_scaled.dss
     stc_ids = [string(i) for i in 1:10]
     for gen_id in stc_ids
-        add_inverter_losses!(math_stc, gen_id; three_wire=false, c_rating_a=30*ones(3))
+        add_inverter_losses!(math_stc, gen_id; three_wire=true, c_rating_a=30*ones(3))
     end
     # Voltage unbalance constraint field used by the OPF builder
     for (_, bus_any) in math_stc["bus"]

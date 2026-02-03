@@ -113,8 +113,14 @@ new line.10718605 phases=3 bus1=12969818 bus2=12936053 linecode=Cable_230V_0.3_A
 new line.10718602 phases=3 bus1=12934835 bus2=12934837 linecode=Cable_230V_0.3_AL length=0.246 units=m
 new line.10712374 phases=3 bus1=12958976 bus2=12934835 linecode=Cable_230V_0.3_AL length=0.815 units=m
 new line.10718603 phases=3 bus1=12958003 bus2=12958438 linecode=Cable_230V_0.2_AL length=3.43 units=m
+
 new line.11559424 phases=3 bus1=9108515 bus2=9431551 linecode=BUSBAR length=0.174 units=m
 new line.11559435 phases=3 bus1=9108515 bus2=9431553 linecode=BUSBAR length=0.138 units=m
+new line.11559440 phases=3 bus1=9108515 bus2=9431552 linecode=BUSBAR length=0.108 units=m
+new line.11559428 phases=3 bus1=9108515 bus2=9431554 linecode=BUSBAR length=0.089 units=m
+new line.11559434 phases=3 bus1=9108515 bus2=9431555 linecode=BUSBAR length=0.089 units=m
+
+
 new line.2583792 phases=3 bus1=9402916 bus2=12936053 linecode=Cable_230V_185_AL_WAVEF length=0.234 units=m
 new line.10699988 phases=3 bus1=12936055 bus2=12962925 linecode=Cable_230V_0.2_AL length=3.02 units=m
 new line.2583798 phases=3 bus1=9402918 bus2=12936055 linecode=Cable_230V_185_AL_WAVEF length=0.515 units=m
@@ -194,7 +200,6 @@ new line.9684951 phases=3 bus1=13454733 bus2=14710399 linecode=Cable_230V_0.2_AL
 new line.3262515 phases=3 bus1=13454745 bus2=9739755 linecode=UNKNOWN_LV_Cable_S length=0.753 units=m
 new line.3288379 phases=3 bus1=14746712 bus2=11083673 linecode=Cable_230V_95_CU length=1.2 units=m
 new line.3450203 phases=3 bus1=14746710 bus2=13507545 linecode=Cable_230V_0.0225_CU length=1.18 units=m
-new line.11559440 phases=3 bus1=9108515 bus2=9431552 linecode=BUSBAR length=0.108 units=m
 new line.7236246 phases=3 bus1=9431552 bus2=17655573 linecode=CONNECTOR length=0.0432 units=m
 new line.4269430 phases=3 bus1=14711419 bus2=17655574 linecode=Cable_230V_185_AL length=0.725 units=m
 new line.7236245 phases=3 bus1=17655574 bus2=17655573 linecode=CONNECTOR length=0.323 units=m
@@ -210,7 +215,6 @@ new line.9689749 phases=3 bus1=14711416 bus2=14755909 linecode=UNKNOWN_LV_Cable_
 new line.3246478 phases=3 bus1=14495371 bus2=17636403 linecode=Cable_230V_185_AL length=0.666 units=m
 new line.7214058 phases=3 bus1=17636403 bus2=17636402 linecode=CONNECTOR length=0.27 units=m
 new line.3251288 phases=3 bus1=9326133 bus2=17636404 linecode=Cable_230V_0.3_CU length=0.216 units=m
-new line.11559428 phases=3 bus1=9108515 bus2=9431554 linecode=BUSBAR length=0.089 units=m
 new line.7214043 phases=3 bus1=9431554 bus2=17636402 linecode=CONNECTOR length=0.0432 units=m
 new line.3208286 phases=3 bus1=13604797 bus2=13595203 linecode=UNKNOWN_LV_Cable_M length=1.67 units=m
 new line.6226777 phases=3 bus1=16875457 bus2=16875458 linecode=Cable_230V_0.06_AL length=0.4 units=m
@@ -253,7 +257,6 @@ new line.10803655 phases=3 bus1=13604669 bus2=13624263 linecode=UNKNOWN_LV_Cable
 new line.10807201 phases=3 bus1=13604797 bus2=13604667 linecode=Cable_230V_0.3_AL length=2.3 units=m
 new line.10808132 phases=3 bus1=13363292 bus2=13363291 linecode=Cable_230V_0.3_AL length=0.871 units=m
 new line.10807657 phases=3 bus1=13363291 bus2=13363289 linecode=Cable_230V_0.3_AL length=3.31 units=m
-new line.11559434 phases=3 bus1=9108515 bus2=9431555 linecode=BUSBAR length=0.089 units=m
 new line.7368989 phases=3 bus1=9431555 bus2=17874057 linecode=CONNECTOR length=0.0432 units=m
 new line.2805080 phases=3 bus1=12725180 bus2=10628787 linecode=Cable_230V_25_AL_ASCT length=1.38 units=m
 new line.3258136 phases=3 bus1=13604667 bus2=10905410 linecode=UNKNOWN_LV_Cable_S length=1.17 units=m

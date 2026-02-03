@@ -1,0 +1,24 @@
+clear
+
+New Circuit.ckt_10148922 basekv=0.415 pu=1.01 bus1=sourcebus basefreq=50 phases=3 Angle=0 ISC3=99999999999 Isc1=99999999999
+
+new line.sourceZ bus1=SourceBus bus2=9108515 phases=3 linecode=Cable_230V_185_AL length=0.393 units=m
+
+!redirect transformers_spd_s.dss
+
+redirect linecodes_dsuite_scaled.dss
+redirect lines_lbs_spd_s_scaled_copy.dss
+redirect loads_spd_s.dss
+
+!redirect statcom_locations_gen.dss
+
+batchedit load.load* kw=1.0 kvar=0.0
+
+calcv
+
+new energymeter.m1 element=line.10699724
+
+solve
+
+set normvmaxpu=1.10
+set normvminpu=0.9

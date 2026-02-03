@@ -59,14 +59,14 @@ end
 objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedPowerModel)
     Minimising maximum current magnitude on the main feeder branch
 """
-function objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedPowerModel)
+function objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedPowerModel; nw::Int=PMD.nw_id_default)
     ref = pm.ref[:it][:pmd][:nw][0]       # TODO change 0 to nw, make this ref dependent
     _, _, arc, branch = get_ref_bus_branch(ref)
     nconds = Dict(l => length(ref[:branch][l]["f_connections"]) for l in [branch])
     conds = Dict(l => ref[:branch][l]["f_connections"] for l in [branch])
     
-    cr_bus = PMD.var(pm, 0, :cr_bus, arc)  # TODO change 0 to nw
-    ci_bus = PMD.var(pm, 0, :ci_bus, arc)  # TODO change 0 to nw
+    cr_bus = PMD.var(pm, nw, :cr_bus, arc)  # TODO change 0 to nw
+    ci_bus = PMD.var(pm, nw, :ci_bus, arc)  # TODO change 0 to nw
     n_ph = 4                               # TODO, make this dependent on nconds, and set to zero the ones that are not equal to nconds[i]
     conds = 1:n_ph
 
@@ -79,13 +79,37 @@ function objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedPowerModel
     return JuMP.@objective(pm.model, Min, cm_max)
 end
 
+"""
+objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedPowerModel)
+    Minimising maximum current magnitude on the main feeder branch
+"""
+function objective_mc_min_max_phase_current(pm::PMD.AbstractUnbalancedIVRModel; nw::Int=PMD.nw_id_default)
+    ref = pm.ref[:it][:pmd][:nw][0]       # TODO change 0 to nw, make this ref dependent
+    _, _, arc, branch = get_ref_bus_branch(ref)
+    nconds = Dict(l => length(ref[:branch][l]["f_connections"]) for l in [branch])
+    conds = Dict(l => ref[:branch][l]["f_connections"] for l in [branch])
+    
+    cr_bus = PMD.var(pm, nw, :cr, arc)  # TODO change 0 to nw
+    ci_bus = PMD.var(pm, nw, :ci, arc)  # TODO change 0 to nw
+    n_ph = 3                               # TODO, make this dependent on nconds, and set to zero the ones that are not equal to nconds[i]
+    conds = 1:n_ph
+
+    ### TODO these variables and constraints should be defiened outside of here, but only added to the model whithin this objective function, 
+    ### so that there are only added to the model if this objective is called
+    cm_max = JuMP.@variable(pm.model, base_name="cm_max", lower_bound=0)
+    
+    JuMP.@constraint(pm.model, [i=1:n_ph], cm_max .>= cr_bus[i].^2 .+ ci_bus[i].^2)
+    @show branch
+    return JuMP.@objective(pm.model, Min, cm_max)
+end
+
 
 """
 objective_mc_min_ref_branch_loss(pm::PMD.AbstractUnbalancedPowerModel)
     Minimising active power losses on the main feeder branch
 """
 function objective_mc_min_ref_branch_loss(pm::PMD.AbstractUnbalancedPowerModel)
-    ref = pm.ref[:it][:pmd][:nw][0]   # TODO change 0 to nw, make this ref dependent
+    ref = pm.ref[:it][:pmd][:nw][nw]   # TODO change 0 to nw, make this ref dependent
     _, _, arc, branch_id = get_ref_bus_branch(ref)
     branch = ref[:branch][branch_id]
 

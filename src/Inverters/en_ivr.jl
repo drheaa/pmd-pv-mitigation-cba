@@ -89,6 +89,60 @@ function constraint_mc_current_to(pm::PMD.AbstractExplicitNeutralIVRModel, nw::I
 end
 
 
+
+# "Defines how current distributes over series and shunt impedances of a pi-model branch"
+# function constraint_mc_current_from(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, f_bus::Int, f_idx::Tuple{Int,Int,Int}, f_connections::Vector{Int}, g_sh_fr::Matrix{<:Real}, b_sh_fr::Matrix{<:Real})
+#     vr_fr = [PMD.var(pm, nw, :vr, f_bus)[c] for c in f_connections]
+#     vi_fr = [PMD.var(pm, nw, :vi, f_bus)[c] for c in f_connections]
+
+#     csr_fr =  [PMD.var(pm, nw, :csr, f_idx[1])[c] for c in f_connections]
+#     csi_fr =  [PMD.var(pm, nw, :csi, f_idx[1])[c] for c in f_connections]
+#     # csr_fr =  PMD.var(pm, nw, :csr, f_idx[1])
+#     # csi_fr =  PMD.var(pm, nw, :csi, f_idx[1])
+
+#     cr_fr =  [PMD.var(pm, nw, :cr, f_idx)[c] for c in f_connections]
+#     ci_fr =  [PMD.var(pm, nw, :ci, f_idx)[c] for c in f_connections]
+#     # cr_fr =  PMD.var(pm, nw, :cr, f_idx)
+#     # ci_fr =  PMD.var(pm, nw, :ci, f_idx)
+
+#     JuMP.@constraint(pm.model, cr_fr .== (csr_fr + g_sh_fr*vr_fr - b_sh_fr*vi_fr))
+#     JuMP.@constraint(pm.model, ci_fr .== (csi_fr + g_sh_fr*vi_fr + b_sh_fr*vr_fr))
+
+#     PMD.var(pm, nw, :cr_bus)[f_idx] = cr_bus_fr = PMD._merge_bus_flows(pm, cr_fr, f_connections)
+#     PMD.var(pm, nw, :ci_bus)[f_idx] = ci_bus_fr = PMD._merge_bus_flows(pm, ci_fr, f_connections)
+
+#      if report
+#         PMD.sol(pm, nw, :branch, f_idx[1])[:pf] =  cr_fr.*vr_fr .+ ci_fr.*vi_fr
+#         PMD.sol(pm, nw, :branch, f_idx[1])[:qf] = -cr_fr.*vi_fr .+ ci_fr.*vr_fr
+#     end
+# end
+
+
+# "Defines how current distributes over series and shunt impedances of a pi-model branch"
+# function constraint_mc_current_to(pm::PMD.AbstractUnbalancedIVRModel, n::Int, t_bus, f_idx::Tuple{Int,Int,Int}, t_idx::Tuple{Int,Int,Int}, f_connections::Vector{Int}, t_connections::Vector{Int}, g_sh_to::Matrix{<:Real}, b_sh_to::Matrix{<:Real})
+#     vr_to = [PMD.var(pm, n, :vr, t_bus)[c] for c in t_connections]
+#     vi_to = [PMD.var(pm, n, :vi, t_bus)[c] for c in t_connections]
+
+#     csr_to = [-PMD.var(pm, n, :csr, f_idx[1])[c] for c in f_connections]
+#     csi_to = [-PMD.var(pm, n, :csi, f_idx[1])[c] for c in f_connections]
+
+#     cr_to = [PMD.var(pm, n, :cr, t_idx)[c] for c in t_connections]
+#     ci_to = [PMD.var(pm, n, :ci, t_idx)[c] for c in t_connections]
+
+#     JuMP.@constraint(pm.model, cr_to .== csr_to + g_sh_to*vr_to - b_sh_to*vi_to)
+#     JuMP.@constraint(pm.model, ci_to .== csi_to + g_sh_to*vi_to + b_sh_to*vr_to)
+
+#     PMD.var(pm, nw, :cr_bus)[t_idx] = cr_bus_to = PMD._merge_bus_flows(pm, cr_to, t_connections)
+#     PMD.var(pm, nw, :ci_bus)[t_idx] = ci_bus_to = PMD._merge_bus_flows(pm, ci_to, t_connections)
+
+#     if report
+#         PMD.sol(pm, nw, :branch, t_idx[1])[:pt] =  cr_to.*vr_to .+ ci_to.*vi_to
+#         PMD.sol(pm, nw, :branch, t_idx[1])[:qt] = -cr_to.*vi_to .+ ci_to.*vr_to
+#     end
+# end
+
+
+
 """
 	function constraint_mc_branch_current_limit(
 		pm::AbstractExplicitNeutralIVRModel,
@@ -208,7 +262,7 @@ For IVR models with explicit neutrals,
 creates non-linear expressions for the generator power `:pd` and `:qd`
 of wye-connected generators as a function of voltage and current
 """
-function constraint_mc_generator_power_wye(pm::PMD.AbstractNLExplicitNeutralIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true)
+function constraint_mc_generator_power_wye_stc(pm::PMD.AbstractNLExplicitNeutralIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true)
     vr = PMD.var(pm, nw, :vr, bus_id)
     vi = PMD.var(pm, nw, :vi, bus_id)
     crg = PMD.var(pm, nw, :crg, id)
@@ -274,7 +328,7 @@ creates non-linear expressions for the generator power `:pd` and `:qd`
 of delta-connected generators as a function of voltage and current
 """
 ### TODO update to have pg and qg limits, similar to wye case above
-function constraint_mc_generator_power_delta(pm::PMD.AbstractNLExplicitNeutralIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true)
+function constraint_mc_generator_power_delta_stc(pm::PMD.AbstractNLExplicitNeutralIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true)
     vr = PMD.var(pm, nw, :vr, bus_id)
     vi = PMD.var(pm, nw, :vi, bus_id)
     crg = PMD.var(pm, nw, :crg, id)
@@ -313,6 +367,102 @@ end
 
 
 """
+	function constraint_mc_generator_power_wye(
+		pm::AbstractUnbalancedIVRModel,
+		nw::Int,
+		id::Int,
+		bus_id::Int,
+		connections::Vector{Int},
+		pmin::Vector{<:Real},
+		pmax::Vector{<:Real},
+		qmin::Vector{<:Real},
+		qmax::Vector{<:Real};
+		report::Bool=true
+	)
+
+For IVR models with explicit neutrals,
+creates non-linear expressions for the generator power `:pd` and `:qd`
+of wye-connected generators as a function of voltage and current
+"""
+function constraint_mc_generator_power_wye_stc(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true)
+    vr = PMD.var(pm, nw, :vr, bus_id)
+    vi = PMD.var(pm, nw, :vi, bus_id)
+    crg = PMD.var(pm, nw, :crg, id)
+    cig = PMD.var(pm, nw, :cig, id)
+
+    phases = connections[1:end]
+
+    pg = JuMP.NonlinearExpr[]
+    qg = JuMP.NonlinearExpr[]
+
+    for (idx, p) in enumerate(phases)
+        push!(pg, JuMP.@expression(pm.model,   vr[p]*crg[idx]  + vi[p]*cig[idx]))
+        push!(qg, JuMP.@expression(pm.model, - vr[p]*cig[idx]  + vi[p]*crg[idx]))
+    end
+
+    JuMP.@constraint(pm.model, sum(pmin) <= sum(pg))
+    JuMP.@constraint(pm.model, sum(pmax) >= sum(pg))
+    JuMP.@constraint(pm.model, sum(qmin) <= sum(qg))
+    JuMP.@constraint(pm.model, sum(qmax) >= sum(qg))
+
+    # @show typeof(pg)
+    # PMD.var(pm, nw, :pg)[id] = pg
+    # PMD.var(pm, nw, :qg)[id] = qg
+
+    if report
+        PMD.sol(pm, nw, :gen, id)[:pg] = pg
+        PMD.sol(pm, nw, :gen, id)[:qg] = qg
+    end
+end
+
+
+function constraint_mc_generator_power_wye(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, pmin::Vector{<:Real}, pmax::Vector{<:Real}, qmin::Vector{<:Real}, qmax::Vector{<:Real}; report::Bool=true, bounded::Bool=true)
+    vr = PMD.var(pm, nw, :vr, bus_id)
+    vi = PMD.var(pm, nw, :vi, bus_id)
+    crg = PMD.var(pm, nw, :crg, id)
+    cig = PMD.var(pm, nw, :cig, id)
+
+    pg = JuMP.NonlinearExpr[]
+    qg = JuMP.NonlinearExpr[]
+
+    for (idx, c) in enumerate(connections)
+        push!(pg, JuMP.@expression(pm.model,  vr[c]*crg[c]+vi[c]*cig[c]))
+        push!(qg, JuMP.@expression(pm.model, -vr[c]*cig[c]+vi[c]*crg[c]))
+    end
+
+    if bounded
+        for (idx,c) in enumerate(connections)
+            if pmin[idx]>-Inf
+                JuMP.@constraint(pm.model, pmin[idx] .<= vr[c]*crg[c]  + vi[c]*cig[c])
+            end
+            if pmax[idx]< Inf
+                JuMP.@constraint(pm.model, pmax[idx] .>= vr[c]*crg[c]  + vi[c]*cig[c])
+            end
+            if qmin[idx]>-Inf
+                JuMP.@constraint(pm.model, qmin[idx] .<= vi[c]*crg[c]  - vr[c]*cig[c])
+            end
+            if qmax[idx]< Inf
+                JuMP.@constraint(pm.model, qmax[idx] .>= vi[c]*crg[c]  - vr[c]*cig[c])
+            end
+        end
+    end
+
+    PMD.var(pm, nw, :crg_bus)[id] = crg
+    PMD.var(pm, nw, :cig_bus)[id] = cig
+    # PMD.var(pm, nw, :pg)[id] = JuMP.Containers.DenseAxisArray(pg, connections)
+    # PMD.var(pm, nw, :qg)[id] = JuMP.Containers.DenseAxisArray(qg, connections)
+
+    if report
+        PMD.sol(pm, nw, :gen, id)[:crg_bus] = PMD.var(pm, nw, :crg_bus, id)
+        PMD.sol(pm, nw, :gen, id)[:cig_bus] = PMD.var(pm, nw, :cig_bus, id)
+
+        PMD.sol(pm, nw, :gen, id)[:pg] = JuMP.Containers.DenseAxisArray(pg, connections)
+        PMD.sol(pm, nw, :gen, id)[:qg] = JuMP.Containers.DenseAxisArray(qg, connections)
+    end
+end
+
+
+"""
 	function constraint_mc_generator_current_limit(
 		pm::AbstractExplicitNeutralIVRModel,
 		nw::Int,
@@ -346,6 +496,37 @@ function constraint_mc_generator_current_limit(pm::PMD.AbstractExplicitNeutralIV
     JuMP.@constraint(pm.model, [c in cnds_zero_rating], crg_bus[c] == 0)
     JuMP.@constraint(pm.model, [c in cnds_zero_rating], cig_bus[c] == 0)
 end
+
+
+
+
+"""
+	function constraint_mc_generator_current_limit(
+		pm::AbstractUnbalancedIVRModel,
+		nw::Int,
+		id::Int,
+		connections::Vector{Int};
+		report::Bool=true,
+		bounded::Bool=true
+	)
+
+For IVR models with explicit neutrals,
+creates expressions for the terminal current flows `:crg_bus` and `:cig_bus` of wye-connected generators
+"""
+function constraint_mc_generator_current_limit(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, id::Int, connections::Vector{Int}, c_rating::Vector{<:Real}; report::Bool=true, bounded::Bool=true)
+    crg = PMD.var(pm, nw, :crg, id)
+    cig = PMD.var(pm, nw, :cig, id)
+
+    @assert length(c_rating) == length(crg)
+    cnds_finite_nonzero_rating = [c for (c,r) in enumerate(c_rating) if (r<Inf && r!==0)]
+    cnds_zero_rating = [c for (c,r) in enumerate(c_rating) if r==0]
+
+    # JuMP.@constraint(pm.model, [c in cnds_finite_rating], crg[c]^2+cig[c]^2 <= c_rating[c]^2)
+    JuMP.@constraint(pm.model, [c in cnds_finite_nonzero_rating], crg[c]^2+cig[c]^2 <= c_rating[c]^2)
+    JuMP.@constraint(pm.model, [c in cnds_zero_rating], crg[c] == 0)
+    JuMP.@constraint(pm.model, [c in cnds_zero_rating], cig[c] == 0)
+end
+
 
 
 """
@@ -393,6 +574,52 @@ function constraint_mc_generator_current_delta(pm::PMD.AbstractExplicitNeutralIV
     PMD.var(pm, nw, :cig_bus)[id] = PMD._merge_bus_flows(pm, Md'*cig, connections)
 end
 
+
+
+"""
+	function constraint_mc_generator_current_wye(
+		pm::AbstractUnbalancedIVRModel,
+		nw::Int,
+		id::Int,
+		connections::Vector{Int};
+		report::Bool=true,
+		bounded::Bool=true
+	)
+
+For IVR models with explicit neutrals,
+creates expressions for the terminal current flows `:crg_bus` and `:cig_bus` of wye-connected generators
+"""
+function constraint_mc_generator_current_wye(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, id::Int, connections::Vector{Int}; report::Bool=true, bounded::Bool=true)
+    crg = PMD.var(pm, nw, :crg, id)
+    cig = PMD.var(pm, nw, :cig, id)
+    # PMD.var(pm, nw, :crg_bus)[id] = PMD._merge_bus_flows(pm, [crg..., -sum(crg)], connections)
+    # PMD.var(pm, nw, :cig_bus)[id] = PMD._merge_bus_flows(pm, [cig..., -sum(cig)], connections)
+    PMD.var(pm, nw, :crg_bus)[id] = crg
+    PMD.var(pm, nw, :cig_bus)[id] = cig
+
+    JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :crg_bus)[id]) == 0)
+    JuMP.@constraint(pm.model, sum(PMD.var(pm, nw, :cig_bus)[id]) == 0)
+end
+
+
+function constraint_mc_branch_current_limit(pm::PMD.AbstractUnbalancedIVRModel, id::Int; nw::Int=PMD.nw_id_default, bounded::Bool=true, report::Bool=true)
+    branch = PMD.ref(pm, nw, :branch, id)
+    f_idx = (id,branch["f_bus"],branch["t_bus"])
+    t_idx = (id,branch["t_bus"],branch["f_bus"])
+
+    constraint_mc_branch_current_limit(pm, nw, f_idx, t_idx, branch["f_connections"], branch["t_connections"], branch["c_rating_a"])
+end
+
+function constraint_mc_branch_current_limit(pm::PMD.AbstractUnbalancedIVRModel, nw::Int, f_idx::Tuple{Int,Int,Int}, t_idx::Tuple{Int,Int,Int}, f_connections::Vector, t_connections::Vector, c_rating::Vector{<:Real}; report::Bool=true)
+    cr_fr = PMD.var(pm, nw, :cr, f_idx)
+    ci_fr = PMD.var(pm, nw, :ci, f_idx)
+    cr_to = PMD.var(pm, nw, :cr, t_idx)
+    ci_to = PMD.var(pm, nw, :ci, t_idx)
+
+    cnds_finite_rating = [c for (c,r) in enumerate(c_rating) if r<Inf]
+    JuMP.@constraint(pm.model, [c in cnds_finite_rating], cr_fr[c]^2+ci_fr[c]^2 <= c_rating[c]^2)
+    JuMP.@constraint(pm.model, [c in cnds_finite_rating], cr_to[c]^2+ci_to[c]^2 <= c_rating[c]^2)
+end
 
 # function constraint_mc_load_current_wye_magnitude(pm::PMD.AbstractExplicitNeutralIVRModel, nw::Int, id::Int, bus_id::Int, connections::Vector{Int}, a::Vector{<:Real}, alpha::Vector{<:Real}, b::Vector{<:Real}, beta::Vector{<:Real}; report::Bool=true)
 function constraint_mc_load_current_wye_magnitude(pm::PMD.AbstractExplicitNeutralIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true)

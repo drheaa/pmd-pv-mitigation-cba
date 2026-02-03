@@ -64,11 +64,11 @@ end
 
 
 """
-    constraint_mc_thermal_limit_from(pm::AbstractUnbalancedPowerModel, i::Int; nw::Int=nw_id_default)::Nothing
+    constraint_mc_thermal_limit_from(pm::AbstractUnbalancedIVRModel, i::Int; nw::Int=nw_id_default)::Nothing
 
 Template function for branch thermal constraints (from-side)
 """
-function constraint_mc_thermal_limit_from(pm::PMD.AbstractUnbalancedPowerModel, i::Int; nw::Int=PMD.nw_id_default)::Nothing
+function constraint_mc_thermal_limit_from(pm::PMD.AbstractUnbalancedIVRModel, i::Int; nw::Int=PMD.nw_id_default)::Nothing
     branch = PMD.ref(pm, nw, :branch, i)
     f_idx = (i, branch["f_bus"], branch["t_bus"])
 
@@ -85,11 +85,11 @@ end
 
 
 """
-    constraint_mc_thermal_limit_to(pm::AbstractUnbalancedPowerModel, i::Int; nw::Int=nw_id_default)::Nothing
+    constraint_mc_thermal_limit_to(pm::AbstractUnbalancedIVRModel, i::Int; nw::Int=nw_id_default)::Nothing
 
 Template function for branch thermal constraints (to-side)
 """
-function constraint_mc_thermal_limit_to(pm::PMD.AbstractUnbalancedPowerModel, i::Int; nw::Int=PMD.nw_id_default)::Nothing
+function constraint_mc_thermal_limit_to(pm::PMD.AbstractUnbalancedIVRModel, i::Int; nw::Int=PMD.nw_id_default)::Nothing
     branch = PMD.ref(pm, nw, :branch, i)
     t_idx = (i, branch["t_bus"], branch["f_bus"])
 
@@ -116,7 +116,57 @@ end
 
 Constrains generator power variables for models with explicit neutrals.
 """
-function constraint_mc_generator_power(pm::PMD.ExplicitNeutralModels, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true)
+function constraint_mc_generator_power_stc(pm::PMD.ExplicitNeutralModels, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true)
+    generator = PMD.ref(pm, nw, :gen, id)
+    bus = PMD.ref(pm, nw,:bus, generator["gen_bus"])
+
+    configuration = generator["configuration"]
+
+    N = length(generator["connections"])
+    pmin = get(generator, "pmin", fill(-Inf, N))
+    pmax = get(generator, "pmax", fill( Inf, N))
+    qmin = get(generator, "qmin", fill(-Inf, N))
+    qmax = get(generator, "qmax", fill( Inf, N))
+
+    if configuration==PMD.WYE || length(pmin)==1
+        constraint_mc_generator_power_wye_stc(pm, nw, id, bus["index"], generator["connections"], pmin, pmax, qmin, qmax; report=report)
+    else
+        constraint_mc_generator_power_delta_stc(pm, nw, id, bus["index"], generator["connections"], pmin, pmax, qmin, qmax; report=report)
+    end
+end
+
+
+"""
+    function constraint_mc_generator_power(
+        pm::AbstractUnbalancedIVRModel,
+        id::Int;
+        nw::Int=PMD.nw_id_default,
+        report::Bool=true
+    )
+
+Constrains generator power variables for models with explicit neutrals.
+"""
+function constraint_mc_generator_power_stc(pm::PMD.AbstractUnbalancedIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true)
+    generator = PMD.ref(pm, nw, :gen, id)
+    bus = PMD.ref(pm, nw,:bus, generator["gen_bus"])
+
+    configuration = generator["configuration"]
+
+    N = length(generator["connections"])
+    pmin = get(generator, "pmin", fill(-Inf, N))
+    pmax = get(generator, "pmax", fill( Inf, N))
+    qmin = get(generator, "qmin", fill(-Inf, N))
+    qmax = get(generator, "qmax", fill( Inf, N))
+
+    if configuration==PMD.WYE || length(pmin)==1
+        constraint_mc_generator_power_wye_stc(pm, nw, id, bus["index"], generator["connections"], pmin, pmax, qmin, qmax; report=report)
+    else
+        constraint_mc_generator_power_delta_stc(pm, nw, id, bus["index"], generator["connections"], pmin, pmax, qmin, qmax; report=report)
+    end
+end
+
+
+function constraint_mc_generator_power(pm::PMD.AbstractUnbalancedIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true)
     generator = PMD.ref(pm, nw, :gen, id)
     bus = PMD.ref(pm, nw,:bus, generator["gen_bus"])
 
@@ -134,7 +184,6 @@ function constraint_mc_generator_power(pm::PMD.ExplicitNeutralModels, id::Int; n
         constraint_mc_generator_power_delta(pm, nw, id, bus["index"], generator["connections"], pmin, pmax, qmin, qmax; report=report)
     end
 end
-
 
 """
 	function constraint_mc_generator_current(
@@ -163,7 +212,45 @@ function constraint_mc_generator_current(pm::PMD.AbstractExplicitNeutralIVRModel
 end
 
 
+
+"""
+	function constraint_mc_generator_current(
+		pm::AbstractUnbalancedIVRModel,
+		id::Int;
+		nw::Int=nw_id_default,
+		report::Bool=true,
+		bounded::Bool=true
+	)
+
+For IVR models with explicit neutrals,
+creates expressions for the terminal current flows `:crg_bus` and `:cig_bus`.
+"""
+function constraint_mc_generator_current(pm::PMD.AbstractUnbalancedIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true, bounded::Bool=true)
+    generator = PMD.ref(pm, nw, :gen, id)
+
+    nphases = PMD._infer_int_dim_unit(generator, false)
+    # Note that one-dimensional delta generators are handled as wye-connected generators.
+    # The distinction between one-dimensional wye and delta generators is purely semantic
+    # when neutrals are modeled explicitly.
+    if get(generator, "configuration", PMD.WYE) == PMD.WYE || nphases==1
+        constraint_mc_generator_current_wye(pm, nw, id, generator["connections"]; report=report, bounded=bounded)
+    else
+        constraint_mc_generator_current_delta(pm, nw, id, generator["connections"]; report=report, bounded=bounded)
+    end
+end
+
+
+
 function constraint_mc_generator_current_limit(pm::PMD.AbstractExplicitNeutralIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true, bounded::Bool=true)
+    generator = PMD.ref(pm, nw, :gen, id)
+
+    if haskey(generator, "c_rating") && any(generator["c_rating"] .< Inf)
+        constraint_mc_generator_current_limit(pm, nw, id, generator["connections"], generator["c_rating"]; report=report, bounded=bounded)
+    end
+end
+
+
+function constraint_mc_generator_current_limit(pm::PMD.AbstractUnbalancedIVRModel, id::Int; nw::Int=PMD.nw_id_default, report::Bool=true, bounded::Bool=true)
     generator = PMD.ref(pm, nw, :gen, id)
 
     if haskey(generator, "c_rating") && any(generator["c_rating"] .< Inf)
