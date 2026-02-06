@@ -26,6 +26,29 @@ This project aims to:
 
 ---
 
+## Project status (February 2026)
+
+As of February 2026, the following components are implemented and tested:
+
+- Baseline unbalanced OPF on selected LV feeders
+- PV-as-negative-load modelling and PV stress scenarios
+- Time-series and snapshot voltage/current analysis
+- Congestion identification (voltage, VUF, branch currents)
+- Initial STATCOM mitigation studies using inverter-based OPF
+- Comparative before/after analysis for selected feeders
+
+Ongoing and future work includes:
+
+- Full SOP modelling
+- Battery-based mitigation
+- Automated placement optimisation
+- Expanded cost–benefit analysis
+- Broader feeder coverage
+
+Some scripts are still under refinement as part of ongoing research.
+
+---
+
 ## Scope of the study
 
 The project follows this workflow:
